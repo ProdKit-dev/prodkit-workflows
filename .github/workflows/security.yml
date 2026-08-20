@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
+  group: prodkit-control-plane-security-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
