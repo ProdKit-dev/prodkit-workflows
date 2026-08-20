@@ -283,7 +283,7 @@ def main() -> None:
     for required in (
         "source_sha:",
         "Guarded release metadata repair",
-        "immutable tag does not resolve to requested source SHA",
+        "does not resolve to requested source SHA",
         "SHA256SUMS",
         '"name": expected_name',
         '"body": expected_body',
