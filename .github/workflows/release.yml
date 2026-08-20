@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       target_sha:
-        description: Exact current main SHA with successful permanent CI and Security
+        description: Exact current main SHA with successful required workflow evidence
         required: true
         type: string
       prerelease:
@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       runner:
-        description: Runner override; policy uses PRODKIT_RUNNER_MODE
+        description: Single runner override; policy uses PRODKIT_RUNNER_MODE
         required: true
         type: choice
         default: policy
