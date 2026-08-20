@@ -29,7 +29,7 @@ on:
         type: string
         default: .prodkit/release.json
       required_workflows_json:
-        description: Workflow names that must have successful push runs on target_sha.
+        description: Workflow names that must have successful exact-SHA push or workflow_dispatch runs on target_sha.
         required: false
         type: string
         default: '["CI","Security"]'
@@ -136,12 +136,13 @@ jobs:
               f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
               headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'prodkit-workflows-release'})
           with urllib.request.urlopen(req) as r: runs=json.load(r)['workflow_runs']
+          accepted_events={'push','workflow_dispatch'}
           missing=[]
           for name in required:
-              matches=[x for x in runs if x.get('name')==name and x.get('event')=='push' and x.get('status')=='completed' and x.get('conclusion')=='success' and x.get('head_sha')==sha]
+              matches=[x for x in runs if x.get('name')==name and x.get('event') in accepted_events and x.get('status')=='completed' and x.get('conclusion')=='success' and x.get('head_sha')==sha]
               if not matches: missing.append(name)
-              else: print(f"{name}: {matches[0].get('html_url')}")
-          if missing: raise SystemExit('missing successful exact-SHA push workflows: '+', '.join(missing))
+              else: print(f"{name} [{matches[0].get('event')}]: {matches[0].get('html_url')}")
+          if missing: raise SystemExit('missing successful exact-SHA push/workflow_dispatch workflows: '+', '.join(missing))
           PY
 
       - name: Validate release manifest and metadata
