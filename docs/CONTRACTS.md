@@ -22,21 +22,30 @@ The GitHub Actions UI normally surfaces the four top-level control-plane workflo
 
 Consumer repositories must call reusable workflows through an exact lowercase 40-character Git commit SHA. Floating branches and tags are not an accepted production contract.
 
-All reusable workflow families accept an explicit `runner_json` target and default to GitHub-hosted Ubuntu. Generated callers implement one common runner policy for CI, Security, Release, and Organization Audit:
+All reusable workflow families accept an explicit `runner_json` target and default to GitHub-hosted Ubuntu. Generated CI and Security callers implement one common runner policy through the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE`:
 
-- `PRODKIT_RUNNER_MODE=github-hosted` selects `ubuntu-latest` for automatic events.
-- `PRODKIT_RUNNER_MODE=self-hosted` selects `["self-hosted","Linux","X64"]` for trusted automatic events.
+- `PRODKIT_RUNNER_MODE=github-hosted` selects only `ubuntu-latest` for automatic trusted events.
+- `PRODKIT_RUNNER_MODE=self-hosted` selects only `["self-hosted","Linux","X64"]` for automatic trusted events.
+- `PRODKIT_RUNNER_MODE=both` executes the complete CI or Security reusable contract independently on both runner classes and requires both lanes to succeed.
 - an unset or unrecognized `PRODKIT_RUNNER_MODE` fails safe to GitHub-hosted Ubuntu.
-- manual `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE`, while the two explicit values override it for that dispatch.
-- fork-originated pull requests are always forced onto GitHub-hosted runners even when `PRODKIT_RUNNER_MODE=self-hosted`.
+- manual `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted | both`; `policy` follows `PRODKIT_RUNNER_MODE`, while the three explicit values override it for that dispatch.
+- fork-originated pull requests are always forced onto GitHub-hosted runners even when `PRODKIT_RUNNER_MODE` or a repository condition would otherwise select self-hosted capacity.
 
-`PRODKIT_RUNNER_MODE` is a non-secret GitHub Actions configuration variable. It may be defined at organization or repository level; repository-level configuration can override the organization policy for a specific consumer. The value is evaluated by the caller repository before the reusable job is routed.
+`PRODKIT_RUNNER_MODE` may be defined at organization or repository level; repository-level configuration can override organization policy for a specific consumer. The value is evaluated by the caller repository before the reusable jobs are routed.
 
-GitHub Actions does not provide ordered `runs-on` fallback. An array of runner labels means the selected runner must match all labels; it does not mean “try hosted, then self-hosted.” Therefore a hosted-runner quota/capacity incident can be handled by changing `PRODKIT_RUNNER_MODE` to `self-hosted` for subsequent runs or by redispatching the exact workflow/ref with `runner: self-hosted`, but transparent automatic detection/redispatch requires a separate trusted controller.
+Each selected CI/Security lane invokes the same exact-SHA-pinned reusable workflow and therefore executes the same enabled adapters. The caller owns one organization-stable policy gate named `ci / CI Required` or `security / Security Required`:
 
-A self-hosted runner still depends on the GitHub Actions control plane for queueing and dispatch and therefore cannot bypass a complete Actions service outage.
+- in `github-hosted` mode the GitHub-hosted lane must succeed and the self-hosted lane must be skipped;
+- in `self-hosted` mode the self-hosted lane must succeed and the GitHub-hosted lane must be skipped;
+- in `both` mode both complete lanes must succeed.
 
-CI and Security concurrency belongs to the thin caller so independent calls to the same reusable workflow can coexist. Reusable Release owns a version-scoped non-cancelling concurrency lock.
+`both` is strict parity/redundancy, not fallback. GitHub Actions does not provide ordered `runs-on` fallback; an array of runner labels means one runner must match all labels. A hosted-runner quota/capacity incident is therefore handled by selecting or redispatching `self-hosted`, not by selecting `both`.
+
+Release is deliberately single-runner because two publication transactions must never race the same immutable tag/release state machine. Its `runner: policy | github-hosted | self-hosted` input follows the same `PRODKIT_RUNNER_MODE` preference, but a configured `both` value resolves safely to GitHub-hosted unless Release is explicitly dispatched with `self-hosted`. Organization Audit is also single-runner because duplicate audits add no release-safety value.
+
+A trusted watchdog/controller may automate exact-SHA hosted-to-self-hosted redispatch, but the workflow contract does not claim native GitHub fallback. A self-hosted runner still depends on the GitHub Actions control plane for queueing and dispatch and therefore cannot bypass a complete Actions service outage.
+
+CI and Security concurrency belongs to the thin caller so both lanes can coexist while a newer run of the same caller/ref cancels obsolete work. Reusable Release owns a version-scoped non-cancelling concurrency lock.
 
 ## Adapter path contract
 
@@ -55,7 +64,7 @@ The reusable CI contract exposes these optional consumer adapters:
 - `ci-container.sh`: production image build/runtime smoke.
 - `ci-custom.sh`: domain-specific gates.
 
-The stable final job is `CI Required`. It accepts only `success` or `skipped` for every declared capability and fails closed on any other result.
+Each reusable CI lane ends in `CI Required`, which accepts only `success` or `skipped` for every declared capability and fails closed on any other result. The thin caller then applies runner-policy semantics and exposes the stable `ci / CI Required` organization check.
 
 ## Security adapters and central evidence
 
@@ -70,7 +79,7 @@ Full-history Gitleaks scanning and source SBOM generation are centrally owned. T
 
 The source SBOM must be SPDX 2.3. Container vulnerability scanning is centrally owned after `security-container-build.sh` produces the requested image.
 
-The stable final job is `Security Required`. It accepts only `success` or `skipped` and fails closed on any other result.
+Each reusable Security lane ends in `Security Required`, which accepts only `success` or `skipped` and fails closed on any other result. The thin caller then applies runner-policy semantics and exposes the stable `security / Security Required` organization check.
 
 ## Release manifest
 
@@ -82,7 +91,11 @@ Release-note and changelog paths must remain inside the checked-out repository. 
 
 Release is dispatch-only. `target_sha` must be a full lowercase 40-character SHA, must be the checked-out commit, and must still be the current configured main branch before publication proceeds.
 
-`required_workflows_json` is a non-empty array of workflow names. Every listed workflow must have a completed successful `push` run for exactly `target_sha`. Pull-request success, a success on another SHA, or a still-running workflow does not satisfy release evidence.
+`required_workflows_json` is a non-empty array of workflow names. Every listed workflow must have a completed successful run for exactly `target_sha` whose event is either `push` or `workflow_dispatch`.
+
+A successful exact-SHA `push` run is the normal permanent evidence path. A successful exact-SHA `workflow_dispatch` run is also accepted so trusted self-hosted redispatch can provide release evidence during a GitHub-hosted quota/capacity incident. Pull-request success, a success on another SHA, or a still-running workflow does not satisfy release evidence.
+
+The workflow name and exact `head_sha` are both verified through the GitHub Actions API. Changing runner mode does not weaken source identity: failover evidence is valid only when the successful run's `head_sha` equals the release `target_sha`, which itself must still equal current `main`.
 
 ## Release toolchains and build adapter
 
