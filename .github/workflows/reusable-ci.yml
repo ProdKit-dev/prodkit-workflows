@@ -83,15 +83,22 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Run hygiene contract
+      - name: Validate hygiene adapter path
         env:
           CONTRACT_SCRIPT: ${{ inputs.hygiene_script }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path" >&2; exit 1 ;; esac
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
           test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+      - name: Run hygiene contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.hygiene_script }}
+        shell: bash
+        run: bash "$CONTRACT_SCRIPT"
 
   python:
     name: Python ${{ matrix.python }}
@@ -112,16 +119,23 @@ jobs:
           version: "0.10.0"
           enable-cache: true
       - run: uv python install "${{ matrix.python }}"
+      - name: Validate Python adapter path
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
       - name: Run Python contract
         env:
           CONTRACT_SCRIPT: ${{ inputs.python_script }}
           PRODKIT_PYTHON_VERSION: ${{ matrix.python }}
         shell: bash
-        run: |
-          set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
-          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+        run: bash "$CONTRACT_SCRIPT"
 
   node:
     name: Node ${{ matrix.node }}
@@ -140,16 +154,23 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
+      - name: Validate Node adapter path
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
       - name: Run Node contract
         env:
           CONTRACT_SCRIPT: ${{ inputs.node_script }}
           PRODKIT_NODE_VERSION: ${{ matrix.node }}
         shell: bash
-        run: |
-          set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
-          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+        run: bash "$CONTRACT_SCRIPT"
 
   postgres:
     name: PostgreSQL
@@ -182,6 +203,17 @@ jobs:
           test -n "$port"
           echo "container=$name" >> "$GITHUB_OUTPUT"
           echo "port=$port" >> "$GITHUB_OUTPUT"
+      - name: Validate PostgreSQL adapter path
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.postgres_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
       - name: Run PostgreSQL contract
         env:
           CONTRACT_SCRIPT: ${{ inputs.postgres_script }}
@@ -191,11 +223,7 @@ jobs:
           PRODKIT_POSTGRES_USER: prodkit
           PRODKIT_POSTGRES_PASSWORD: prodkit
         shell: bash
-        run: |
-          set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
-          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+        run: bash "$CONTRACT_SCRIPT"
       - name: Stop PostgreSQL
         if: always()
         env:
@@ -212,15 +240,22 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Run container contract
+      - name: Validate container adapter path
         env:
           CONTRACT_SCRIPT: ${{ inputs.container_script }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
           test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+      - name: Run container contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.container_script }}
+        shell: bash
+        run: bash "$CONTRACT_SCRIPT"
 
   custom:
     name: Custom
@@ -232,15 +267,22 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Run custom contract
+      - name: Validate custom adapter path
         env:
           CONTRACT_SCRIPT: ${{ inputs.custom_script }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
           test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+      - name: Run custom contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.custom_script }}
+        shell: bash
+        run: bash "$CONTRACT_SCRIPT"
 
   required:
     name: CI Required
