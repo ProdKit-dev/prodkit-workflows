@@ -19,21 +19,33 @@ python3 scripts/bootstrap_consumer.py \
 
 Edit the generated adapters and disable unused capabilities in caller workflows. If a repository does not have both `package.json` and `pyproject.toml`, remove the irrelevant version source from `.prodkit/release.json`.
 
-Generated callers support both GitHub-hosted and self-hosted execution. Configure the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE` at organization or repository level:
+## 4. Select runner mode
 
-- `github-hosted` → automatic trusted events use `ubuntu-latest`;
-- `self-hosted` → automatic trusted events use `["self-hosted","Linux","X64"]`;
+Generated CI and Security callers support GitHub-hosted-only, self-hosted-only, or strict dual-runner execution. Configure the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE` at organization or repository level:
+
+- `github-hosted` → run only on `ubuntu-latest`;
+- `self-hosted` → run only on `["self-hosted","Linux","X64"]`;
+- `both` → run the complete contract independently on both runner classes and require both;
 - unset/unknown → GitHub-hosted fail-safe default.
 
-Repository-level configuration overrides organization-level configuration. Manual `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE` and explicit choices override it for that dispatch.
+Repository-level configuration overrides organization-level configuration. Manual CI/Security `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted | both`; `policy` follows `PRODKIT_RUNNER_MODE` and explicit choices override it for that dispatch.
 
-Fork-originated pull requests are always routed to GitHub-hosted runners, even if the configured policy is self-hosted. GitHub Actions has no native ordered runner fallback; see `docs/RUNNERS.md` before automating quota/capacity failover.
+Fork-originated pull requests are always routed to GitHub-hosted runners, even if the configured policy requests self-hosted or both. GitHub Actions has no native ordered runner fallback.
 
-## 4. Stabilize required status names
+`both` is for parity/redundancy, not failover. During a GitHub-hosted quota/capacity incident, switch or redispatch the exact source SHA with `runner: self-hosted`. The exact-SHA dispatch result can satisfy Release evidence just like the normal exact-SHA push result.
 
-The supplied caller jobs are named `ci` and `security`. GitHub therefore exposes the final reusable checks as `ci / CI Required` and `security / Security Required`. Run both workflows once before configuring them as required checks.
+Release remains single-runner with `runner: policy | github-hosted | self-hosted` so two publication transactions cannot race. Organization Audit is also single-runner.
 
-## 5. Apply organization rulesets safely
+## 5. Stabilize required status names
+
+The thin callers expose stable final runner-policy gates:
+
+- `ci / CI Required`
+- `security / Security Required`
+
+Those names remain the same for GitHub-hosted, self-hosted, and `both`. Run both workflows once before configuring them as required checks.
+
+## 6. Apply organization rulesets safely
 
 Import `rulesets/org-main.json` and `rulesets/org-release-tags.json` at the organization level. The shipped recipes are intentionally **disabled by default** even though their repository condition is `~ALL`.
 
@@ -47,10 +59,12 @@ Before activation:
 
 Do not activate the `~ALL` condition while unmigrated repositories still depend on local workflow names.
 
-## 6. Migrate releases
+## 7. Migrate releases
 
-Replace old release implementations only after the new CI/Security push runs are permanent on `main`. Preserve historical tags/releases. Do not rewrite old release commits. New releases use exactly one path: `workflow_dispatch(version, target_sha)`.
+Replace old release implementations only after the new CI/Security evidence path is permanent on `main`. Preserve historical tags/releases. Do not rewrite old release commits. New releases use exactly one path: `workflow_dispatch(version, target_sha)`.
 
-## 7. Audit drift
+The normal evidence path is a completed successful exact-SHA `push` run for every required workflow. During trusted runner failover, a completed successful exact-SHA `workflow_dispatch` run is also accepted. Pull-request-only success never satisfies Release.
+
+## 8. Audit drift
 
 Configure a fine-grained PAT or GitHub App token with read access to the organization repositories as `ORG_AUDIT_TOKEN` in the control-plane repository, then run `Organization Audit`. The auditor fails on floating pins, missing wrappers, local release implementation patterns, or obsolete central SHAs.
