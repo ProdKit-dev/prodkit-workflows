@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: prodkit-control-plane-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
