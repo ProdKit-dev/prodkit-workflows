@@ -118,7 +118,7 @@ def test_manifest_contract() -> None:
         raise SystemExit("release schema must require at least one version source")
 
 
-def assert_runner_policy(text: str, *, name: str, fork_safe: bool) -> None:
+def assert_base_runner_policy(text: str, *, name: str) -> None:
     for required in (
         "workflow_dispatch:",
         "default: policy",
@@ -131,8 +131,32 @@ def assert_runner_policy(text: str, *, name: str, fork_safe: bool) -> None:
     ):
         if required not in text:
             raise SystemExit(f"runner policy missing from {name}: {required}")
-    if fork_safe and "github.event.pull_request.head.repo.full_name == github.repository" not in text:
-        raise SystemExit(f"fork safety missing from {name}")
+
+
+def assert_dual_runner_policy(text: str, *, name: str, gate_name: str) -> None:
+    assert_base_runner_policy(text, name=name)
+    for required in (
+        "- both",
+        "vars.PRODKIT_RUNNER_MODE == 'both'",
+        "github.event.pull_request.head.repo.full_name != github.repository",
+        "github.event.pull_request.head.repo.full_name == github.repository",
+        "name: GitHub-hosted",
+        "name: Self-hosted",
+        f"name: {gate_name}",
+        "needs: [github-hosted, self-hosted]",
+        "GITHUB_HOSTED_RESULT",
+        "SELF_HOSTED_RESULT",
+        "test \"$GITHUB_HOSTED_RESULT\" = success",
+        "test \"$SELF_HOSTED_RESULT\" = success",
+    ):
+        if required not in text:
+            raise SystemExit(f"dual-runner policy missing from {name}: {required}")
+
+
+def assert_single_runner_policy(text: str, *, name: str) -> None:
+    assert_base_runner_policy(text, name=name)
+    if "\n          - both\n" in text:
+        raise SystemExit(f"single-runner workflow must not expose both mode: {name}")
 
 
 def main() -> None:
@@ -171,7 +195,7 @@ def main() -> None:
             f"actual={sorted(template_adapters)} expected={sorted(EXPECTED_CONSUMER_ADAPTERS)}"
         )
 
-    # Bootstrap must materialize immutable refs, conditional runner policy, and the exact adapter catalog.
+    # Bootstrap must materialize immutable refs, runner-mode policy, and the exact adapter catalog.
     with tempfile.TemporaryDirectory() as td:
         dest = pathlib.Path(td) / "consumer"
         dest.mkdir()
@@ -193,7 +217,17 @@ def main() -> None:
             text = (dest / ".github/workflows" / name).read_text()
             if "example/workflows/.github/workflows/" not in text or f"@{sha}" not in text:
                 raise SystemExit("bootstrap pin failure")
-            assert_runner_policy(text, name=f"bootstrap {name}", fork_safe=name in {"ci.yml", "security.yml"})
+
+        ci = (dest / ".github/workflows/ci.yml").read_text()
+        security = (dest / ".github/workflows/security.yml").read_text()
+        release = (dest / ".github/workflows/release.yml").read_text()
+        assert_dual_runner_policy(ci, name="bootstrap ci.yml", gate_name="ci / CI Required")
+        assert_dual_runner_policy(
+            security,
+            name="bootstrap security.yml",
+            gate_name="security / Security Required",
+        )
+        assert_single_runner_policy(release, name="bootstrap release.yml")
 
         for name in ("ci.yml", "security.yml"):
             text = (dest / ".github/workflows" / name).read_text()
@@ -210,7 +244,6 @@ def main() -> None:
                 f"expected={sorted(EXPECTED_CONSUMER_ADAPTERS)}"
             )
 
-        release = (dest / ".github/workflows/release.yml").read_text()
         for required in (
             "python_enabled: true",
             'python_version: "3.12"',
@@ -227,6 +260,7 @@ def main() -> None:
     reusable_release = (ROOT / ".github/workflows/reusable-release.yml").read_text()
     reusable_org_audit = (ROOT / ".github/workflows/reusable-org-audit.yml").read_text()
     contracts = (ROOT / "docs/CONTRACTS.md").read_text()
+    runners = (ROOT / "docs/RUNNERS.md").read_text()
     readme = (ROOT / "README.md").read_text()
 
     for name, text in (
@@ -267,9 +301,13 @@ def main() -> None:
         "release-metadata.json",
         "repository.spdx.json",
         "SHA256SUMS",
+        "accepted_events={'push','workflow_dispatch'}",
+        "missing successful exact-SHA push/workflow_dispatch workflows",
     ):
         if required not in reusable_release:
             raise SystemExit(f"reusable Release contract missing: {required}")
+    if "x.get('event')=='pull_request'" in reusable_release:
+        raise SystemExit("Release must never accept pull-request-only evidence")
 
     for name in ("reusable-ci.yml", "reusable-security.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
@@ -278,10 +316,25 @@ def main() -> None:
     if "group: release-${{ inputs.version }}" not in reusable_release:
         raise SystemExit("reusable Release version concurrency contract missing")
 
-    # The control-plane callers use the same conditional runner policy as generated consumers.
-    for name in ("ci.yml", "security.yml", "release.yml", "org-audit.yml"):
-        text = (ROOT / ".github/workflows" / name).read_text()
-        assert_runner_policy(text, name=f"self caller {name}", fork_safe=name in {"ci.yml", "security.yml"})
+    assert_dual_runner_policy(
+        (ROOT / ".github/workflows/ci.yml").read_text(),
+        name="self caller ci.yml",
+        gate_name="ci / CI Required",
+    )
+    assert_dual_runner_policy(
+        (ROOT / ".github/workflows/security.yml").read_text(),
+        name="self caller security.yml",
+        gate_name="security / Security Required",
+    )
+    assert_single_runner_policy(
+        (ROOT / ".github/workflows/release.yml").read_text(),
+        name="self caller release.yml",
+    )
+    assert_single_runner_policy(
+        (ROOT / ".github/workflows/org-audit.yml").read_text(),
+        name="self caller org-audit.yml",
+    )
+
     for name in ("ci.yml", "security.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
         if "concurrency:" not in text or "cancel-in-progress: true" not in text:
@@ -291,9 +344,12 @@ def main() -> None:
         "exact lowercase 40-character Git commit SHA",
         "Repository layers and file ownership",
         "Complete consumer adapter catalog",
-        "Disabled capabilities do not require their adapter file to exist",
-        "PRODKIT_RUNNER_MODE",
-        "fork-originated pull requests are always forced onto GitHub-hosted runners",
+        "PRODKIT_RUNNER_MODE=both",
+        "ci / CI Required",
+        "security / Security Required",
+        "strict parity/redundancy",
+        "workflow_dispatch",
+        "Pull-request success",
         "at least one payload",
         "Release publication state machine",
         "required_workflows_json",
@@ -302,8 +358,18 @@ def main() -> None:
         if phrase not in contracts:
             raise SystemExit(f"CONTRACTS.md missing normative contract: {phrase}")
 
-    if "Conditional hosted/self-hosted policy" not in readme:
-        raise SystemExit("README runner policy is not conditional hosted/self-hosted")
+    for phrase in (
+        "PRODKIT_RUNNER_MODE",
+        "runner: both",
+        "strict parity/redundancy",
+        "runner: self-hosted",
+        "trusted `workflow_dispatch` run",
+    ):
+        if phrase not in runners:
+            raise SystemExit(f"RUNNERS.md missing runner-mode guidance: {phrase}")
+
+    if "Conditional hosted/self-hosted/both policy" not in readme:
+        raise SystemExit("README runner policy does not cover both runner classes")
     if "default to `self-hosted" in readme:
         raise SystemExit("README still claims self-hosted is the default")
 
