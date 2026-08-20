@@ -10,6 +10,8 @@ GitHub Actions does not provide an `OR` or ordered-fallback form of `runs-on`. A
 
 For a hosted-runner quota/capacity incident, rerun the exact workflow/ref with `runner: self-hosted`. The workflow uses the same pinned reusable contract and emits the same stable required job names. Automatic detection and redispatch requires a separate trusted watchdog/controller and is intentionally not emulated with duplicate release jobs or race-prone parallel execution.
 
+CI and Security concurrency belongs to each thin caller, not the reusable workflow. That lets distinct calls to the reusable contract coexist when testing runner portability, while a new run of the same caller/ref still cancels obsolete work. Release keeps its version-scoped non-cancelling lock because publication must never race.
+
 A self-hosted runner can help when the GitHub-hosted execution pool or account allowance is unavailable, but it cannot bypass a complete GitHub Actions control-plane outage because GitHub still queues and dispatches self-hosted jobs.
 
 ## Security boundary
