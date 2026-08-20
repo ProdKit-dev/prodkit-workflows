@@ -15,6 +15,7 @@ on:
           - policy
           - github-hosted
           - self-hosted
+          - both
   schedule:
     - cron: "41 4 * * 1"
 
@@ -26,11 +27,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  security:
-    name: security
+  github-hosted:
+    name: GitHub-hosted
+    if: >-
+      ${{
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) ||
+        (github.event_name == 'workflow_dispatch' && (inputs.runner == 'github-hosted' || inputs.runner == 'both' || (inputs.runner == 'policy' && vars.PRODKIT_RUNNER_MODE != 'self-hosted'))) ||
+        (github.event_name != 'workflow_dispatch' && vars.PRODKIT_RUNNER_MODE != 'self-hosted')
+      }}
     uses: ./.github/workflows/reusable-security.yml
     with:
-      runner_json: ${{ ((((github.event_name == 'workflow_dispatch') && ((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')))) || ((github.event_name != 'workflow_dispatch') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) && ((github.event_name != 'pull_request') || (github.event.pull_request.head.repo.full_name == github.repository))) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
+      runner_json: '"ubuntu-latest"'
       secret_scan_enabled: true
       sbom_enabled: true
       python_enabled: false
@@ -38,3 +45,70 @@ jobs:
       container_enabled: false
       custom_enabled: true
       custom_script: .prodkit/workflows/security-custom.sh
+
+  self-hosted:
+    name: Self-hosted
+    if: >-
+      ${{
+        ((github.event_name != 'pull_request') || (github.event.pull_request.head.repo.full_name == github.repository)) &&
+        (
+          (github.event_name == 'workflow_dispatch' && (inputs.runner == 'self-hosted' || inputs.runner == 'both' || (inputs.runner == 'policy' && (vars.PRODKIT_RUNNER_MODE == 'self-hosted' || vars.PRODKIT_RUNNER_MODE == 'both')))) ||
+          (github.event_name != 'workflow_dispatch' && (vars.PRODKIT_RUNNER_MODE == 'self-hosted' || vars.PRODKIT_RUNNER_MODE == 'both'))
+        )
+      }}
+    uses: ./.github/workflows/reusable-security.yml
+    with:
+      runner_json: '["self-hosted","Linux","X64"]'
+      secret_scan_enabled: true
+      sbom_enabled: true
+      python_enabled: false
+      node_enabled: false
+      container_enabled: false
+      custom_enabled: true
+      custom_script: .prodkit/workflows/security-custom.sh
+
+  security:
+    name: security / Security Required
+    if: ${{ always() }}
+    needs: [github-hosted, self-hosted]
+    runs-on: ${{ fromJSON(((((github.event_name != 'pull_request') || (github.event.pull_request.head.repo.full_name == github.repository)) && (((github.event_name == 'workflow_dispatch') && ((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')))) || ((github.event_name != 'workflow_dispatch') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')))) && '["self-hosted","Linux","X64"]') || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify selected runner mode
+        env:
+          CONFIGURED_MODE: ${{ vars.PRODKIT_RUNNER_MODE }}
+          MANUAL_RUNNER: ${{ inputs.runner }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          GITHUB_HOSTED_RESULT: ${{ needs.github-hosted.result }}
+          SELF_HOSTED_RESULT: ${{ needs.self-hosted.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${CONFIGURED_MODE:-}" in
+            github-hosted|self-hosted|both) mode="$CONFIGURED_MODE" ;;
+            *) mode=github-hosted ;;
+          esac
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "${MANUAL_RUNNER:-policy}" != policy ]]; then
+            mode="$MANUAL_RUNNER"
+          fi
+          if [[ "$FORK_PR" == true ]]; then
+            mode=github-hosted
+          fi
+          case "$mode" in
+            github-hosted)
+              test "$GITHUB_HOSTED_RESULT" = success
+              test "$SELF_HOSTED_RESULT" = skipped
+              ;;
+            self-hosted)
+              test "$GITHUB_HOSTED_RESULT" = skipped
+              test "$SELF_HOSTED_RESULT" = success
+              ;;
+            both)
+              test "$GITHUB_HOSTED_RESULT" = success
+              test "$SELF_HOSTED_RESULT" = success
+              ;;
+            *)
+              echo "invalid resolved runner mode: $mode" >&2
+              exit 1
+              ;;
+          esac
