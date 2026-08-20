@@ -9,7 +9,7 @@ It replaces copied repository-specific release state machines with immutable, re
 - **One release policy with separate immutable and mutable operations.** A production release is requested manually with a semantic version and an exact `main` SHA. The guarded release workflow proves that SHA, checks permanent CI/Security evidence, builds from it, attests it, creates an immutable tag, publishes through a draft-first transaction, and independently verifies published assets. A separate guarded metadata-repair entry point may later reconcile only the mutable GitHub Release name/body from canonical repository metadata while proving that the existing tag and every published asset remain unchanged.
 - **Repository specialization without policy drift.** Consumers implement narrow `.prodkit/workflows/*.sh` adapters. The central workflows own orchestration, permissions, toolchain installation, isolation, final required gates, and release integrity.
 - **Immutable reuse.** Consumer caller workflows are generated with a full 40-character `prodkit-workflows` commit SHA. Floating `main`, `v0`, or branch references are intentionally rejected by the bootstrap/audit tooling.
-- **Hosted-first automatic runner failover.** `PRODKIT_RUNNER_MODE=auto` (and an unset policy) performs a minimal GitHub-hosted availability probe before trusted workloads. A failed probe routes the same reusable workflow to `["self-hosted","Linux","X64"]`; explicit `github-hosted` and `self-hosted` remain strict overrides. Fork pull requests are always hosted-only.
+- **Hosted-first automatic runner failover.** `PRODKIT_RUNNER_MODE=auto` (and an unset policy) performs a minimal GitHub-hosted availability probe before trusted workloads. The probe is deliberately **non-poisoning**: it emits `available=true` only when a hosted runner actually starts, and an absent availability output routes the unchanged reusable workflow to `["self-hosted","Linux","X64"]` without turning the infrastructure probe itself into a failed required gate. Explicit `github-hosted` and `self-hosted` remain strict overrides. Fork pull requests are always hosted-only.
 - **Stable branch-protection identities.** Failover happens before invoking the reusable workflow, so caller names such as `ci` and `security` remain unchanged and organization rulesets can continue requiring `ci / CI Required` and `security / Security Required`.
 - **Fail closed.** Missing evidence, version drift, tag movement, path escapes, symlinked release payloads, empty artifact sets, incomplete drafts, published checksum mismatches, unsafe fork routing, or metadata repair that changes immutable release state stop the operation.
 - **Workflow syntax is a release gate.** The control-plane repository runs pinned `rhysd/actionlint:1.7.12` in its hygiene contract; malformed or semantically invalid Actions YAML cannot become a trusted central revision.
@@ -70,7 +70,7 @@ The generated files are deliberately thin:
 
 That is the complete adapter catalog. A consumer enables only the capabilities it needs. Disabled capabilities do not require their adapter file at runtime; enabled capabilities must point to a real non-symlink file beneath `.prodkit/workflows/`.
 
-Runner selection is configuration, not copied product logic. Set the GitHub Actions variable `PRODKIT_RUNNER_MODE` to `auto`, `github-hosted`, or `self-hosted` at organization or repository level. Unset behaves as `auto`; unknown values fail safe to strict GitHub-hosted execution. Manual dispatch can choose `policy`, `auto`, `github-hosted`, or `self-hosted`; use `runner: auto` to force hosted-first failover for that dispatch. In `auto`, the caller first runs a repository-code-free hosted availability probe and falls back to trusted self-hosted only if that probe fails. See `docs/RUNNERS.md`.
+Runner selection is configuration, not copied product logic. Set the GitHub Actions variable `PRODKIT_RUNNER_MODE` to `auto`, `github-hosted`, or `self-hosted` at organization or repository level. Unset behaves as `auto`; unknown values fail safe to strict GitHub-hosted execution. Manual dispatch can choose `policy`, `auto`, `github-hosted`, or `self-hosted`; use `runner: auto` to force hosted-first failover for that dispatch. In `auto`, the caller first runs a repository-code-free hosted availability probe. If that probe actually runs it emits `available=true`; otherwise the trusted workload is routed to self-hosted. See `docs/RUNNERS.md`.
 
 See `docs/ADOPTION.md` and `docs/CONTRACTS.md` for the complete consumer contract.
 
@@ -91,10 +91,10 @@ merge to main
         v
 workflow_dispatch(version, target_sha)
         |
-        +--> hosted availability probe when runner policy is auto
+        +--> non-poisoning hosted availability probe when runner policy is auto
         |        |
-        |        +--> success -> hosted release
-        |        +--> failure -> trusted self-hosted release
+        |        +--> available=true -> hosted release
+        |        +--> no availability output -> trusted self-hosted release
         v
 verify target_sha == current main
 verify version manifest + notes + changelog
