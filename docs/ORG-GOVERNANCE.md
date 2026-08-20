@@ -10,4 +10,15 @@ Recommended controls:
 - workflow permissions: default organization `GITHUB_TOKEN` to read-only; reusable Release explicitly requests only publication/provenance permissions;
 - drift audit: run after central workflow upgrades and periodically across repositories.
 
-The supplied JSON files are templates. Review bypass actors and repository targeting before activating them.
+The supplied JSON files are import recipes, not activation commands. They deliberately ship with `"enforcement": "disabled"` so an import cannot immediately lock unmigrated repositories. Their repository condition remains `~ALL` to make the intended eventual organization-wide policy explicit.
+
+Safe activation sequence:
+
+1. import the ruleset while disabled;
+2. replace `~ALL` with a selected set of already-migrated repositories;
+3. verify the centralized required checks exist and are green on those repositories;
+4. review bypass actors and approval policy;
+5. activate the ruleset;
+6. expand targeting incrementally after each repository migration.
+
+Never activate the branch ruleset against an unmigrated repository that does not yet emit `ci / CI Required` and `security / Security Required`.

@@ -11,7 +11,10 @@ Choose the exact commit SHA of the reviewed `prodkit-workflows` revision. Do not
 ## 3. Generate a consumer integration
 
 ```bash
-python3 scripts/bootstrap_consumer.py   --workflows-repository ProdKit-dev/prodkit-workflows   --workflows-sha <sha>   --destination ../consumer
+python3 scripts/bootstrap_consumer.py \
+  --workflows-repository ProdKit-dev/prodkit-workflows \
+  --workflows-sha <sha> \
+  --destination ../consumer
 ```
 
 Edit the generated adapters and disable unused capabilities in caller workflows. If a repository does not have both `package.json` and `pyproject.toml`, remove the irrelevant version source from `.prodkit/release.json`.
@@ -20,9 +23,19 @@ Edit the generated adapters and disable unused capabilities in caller workflows.
 
 The supplied caller jobs are named `ci` and `security`. GitHub therefore exposes the final reusable checks as `ci / CI Required` and `security / Security Required`. Run both workflows once before configuring them as required checks.
 
-## 5. Apply organization rulesets
+## 5. Apply organization rulesets safely
 
-Import `rulesets/org-main.json` and `rulesets/org-release-tags.json` at the organization level, review repository targeting, bypass actors, approval count, and status-check sources, then enable them. The templates target all organization repositories; narrow them if not every repository follows this control plane.
+Import `rulesets/org-main.json` and `rulesets/org-release-tags.json` at the organization level. The shipped recipes are intentionally **disabled by default** even though their repository condition is `~ALL`.
+
+Before activation:
+
+1. change repository targeting from `~ALL` to only the repositories that have completed migration;
+2. verify `ci / CI Required` and `security / Security Required` already exist on those repositories;
+3. review bypass actors, approval count, and status-check sources;
+4. activate the ruleset only after that review;
+5. expand the repository target set incrementally as additional repositories migrate.
+
+Do not activate the `~ALL` condition while unmigrated repositories still depend on local workflow names.
 
 ## 6. Migrate releases
 

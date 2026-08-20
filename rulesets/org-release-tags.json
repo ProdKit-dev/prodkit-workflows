@@ -2,7 +2,7 @@
   "name": "ProdKit immutable semantic release tags",
   "target": "tag",
   "source_type": "Organization",
-  "enforcement": "active",
+  "enforcement": "disabled",
   "conditions": {
     "repository_name": {
       "exclude": [],

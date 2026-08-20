@@ -2,7 +2,7 @@
   "name": "ProdKit default branch protection",
   "target": "branch",
   "source_type": "Organization",
-  "enforcement": "active",
+  "enforcement": "disabled",
   "conditions": {
     "repository_name": {
       "exclude": [],
