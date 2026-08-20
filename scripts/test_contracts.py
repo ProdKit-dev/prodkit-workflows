@@ -17,6 +17,7 @@ EXPECTED_GITHUB_WORKFLOWS = {
     "reusable-ci.yml",
     "reusable-security.yml",
     "reusable-release.yml",
+    "reusable-release-metadata.yml",
     "reusable-org-audit.yml",
 }
 
@@ -193,7 +194,11 @@ def main() -> None:
             text = (dest / ".github/workflows" / name).read_text()
             if "example/workflows/.github/workflows/" not in text or f"@{sha}" not in text:
                 raise SystemExit("bootstrap pin failure")
-            assert_runner_policy(text, name=f"bootstrap {name}", fork_safe=name in {"ci.yml", "security.yml"})
+            assert_runner_policy(
+                text,
+                name=f"bootstrap {name}",
+                fork_safe=name in {"ci.yml", "security.yml"},
+            )
 
         for name in ("ci.yml", "security.yml"):
             text = (dest / ".github/workflows" / name).read_text()
@@ -225,6 +230,9 @@ def main() -> None:
     reusable_ci = (ROOT / ".github/workflows/reusable-ci.yml").read_text()
     reusable_security = (ROOT / ".github/workflows/reusable-security.yml").read_text()
     reusable_release = (ROOT / ".github/workflows/reusable-release.yml").read_text()
+    reusable_release_metadata = (
+        ROOT / ".github/workflows/reusable-release-metadata.yml"
+    ).read_text()
     reusable_org_audit = (ROOT / ".github/workflows/reusable-org-audit.yml").read_text()
     contracts = (ROOT / "docs/CONTRACTS.md").read_text()
     readme = (ROOT / "README.md").read_text()
@@ -233,6 +241,7 @@ def main() -> None:
         ("CI", reusable_ci),
         ("Security", reusable_security),
         ("Release", reusable_release),
+        ("Release Metadata", reusable_release_metadata),
         ("Organization Audit", reusable_org_audit),
     ):
         if "default: '\"ubuntu-latest\"'" not in text:
@@ -271,17 +280,37 @@ def main() -> None:
         if required not in reusable_release:
             raise SystemExit(f"reusable Release contract missing: {required}")
 
+    for required in (
+        "source_sha:",
+        "Guarded release metadata repair",
+        "immutable tag does not resolve to requested source SHA",
+        "SHA256SUMS",
+        '"name": expected_name',
+        '"body": expected_body',
+        "release publication flags changed during metadata repair",
+        "published asset identity changed during metadata-only repair",
+        "immutable tag moved during metadata repair",
+    ):
+        if required not in reusable_release_metadata:
+            raise SystemExit(f"reusable Release Metadata contract missing: {required}")
+
     for name in ("reusable-ci.yml", "reusable-security.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
         if "\nconcurrency:\n" in text:
             raise SystemExit(f"reusable workflow must not own caller concurrency: {name}")
     if "group: release-${{ inputs.version }}" not in reusable_release:
         raise SystemExit("reusable Release version concurrency contract missing")
+    if "group: release-metadata-${{ inputs.version }}" not in reusable_release_metadata:
+        raise SystemExit("reusable Release Metadata version concurrency contract missing")
 
     # The control-plane callers use the same conditional runner policy as generated consumers.
     for name in ("ci.yml", "security.yml", "release.yml", "org-audit.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
-        assert_runner_policy(text, name=f"self caller {name}", fork_safe=name in {"ci.yml", "security.yml"})
+        assert_runner_policy(
+            text,
+            name=f"self caller {name}",
+            fork_safe=name in {"ci.yml", "security.yml"},
+        )
     for name in ("ci.yml", "security.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
         if "concurrency:" not in text or "cancel-in-progress: true" not in text:
@@ -296,6 +325,7 @@ def main() -> None:
         "fork-originated pull requests are always forced onto GitHub-hosted runners",
         "at least one payload",
         "Release publication state machine",
+        "Release metadata repair",
         "required_workflows_json",
         "gitleaks_config_path",
     ):
@@ -304,6 +334,8 @@ def main() -> None:
 
     if "Conditional hosted/self-hosted policy" not in readme:
         raise SystemExit("README runner policy is not conditional hosted/self-hosted")
+    if "Guarded release metadata repair" not in readme:
+        raise SystemExit("README release metadata repair contract is missing")
     if "default to `self-hosted" in readme:
         raise SystemExit("README still claims self-hosted is the default")
 
