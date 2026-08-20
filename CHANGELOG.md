@@ -17,3 +17,6 @@ All notable changes to this repository are documented here.
 - Reject empty, nested, symlinked, or central-proof-name consumer release payloads before source archives, SBOMs, metadata, and checksums are added.
 - Preserve redacted full-history Gitleaks JSON evidence and support repository-contained reviewed Gitleaks allowlist configuration.
 - Lock `docs/CONTRACTS.md`, reusable workflow behavior, bootstrap output, manifest schema, and local validators together with regression tests.
+- Clarify the three workflow-related repository layers: 8 GitHub workflow YAMLs, an 11-file consumer adapter catalog, and the 4 adapters enabled by the control-plane repository itself.
+- Replace the remaining stale README claim that self-hosted runners are the default with the implemented hosted-first/manual-failover policy.
+- Make contract tests assert the exact workflow, template-adapter, generated-adapter, and self-adapter file sets rather than accepting an approximate adapter count.
