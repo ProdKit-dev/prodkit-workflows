@@ -70,7 +70,7 @@ The generated files are deliberately thin:
 
 That is the complete adapter catalog. A consumer enables only the capabilities it needs. Disabled capabilities do not require their adapter file at runtime; enabled capabilities must point to a real non-symlink file beneath `.prodkit/workflows/`.
 
-Runner selection is configuration, not copied product logic. Set the GitHub Actions variable `PRODKIT_RUNNER_MODE` to `auto`, `github-hosted`, or `self-hosted` at organization or repository level. Unset behaves as `auto`; unknown values fail safe to strict GitHub-hosted execution. Manual dispatch can choose `policy`, `auto`, `github-hosted`, or `self-hosted`. In `auto`, the caller first runs a repository-code-free hosted availability probe and falls back to trusted self-hosted only if that probe fails. See `docs/RUNNERS.md`.
+Runner selection is configuration, not copied product logic. Set the GitHub Actions variable `PRODKIT_RUNNER_MODE` to `auto`, `github-hosted`, or `self-hosted` at organization or repository level. Unset behaves as `auto`; unknown values fail safe to strict GitHub-hosted execution. Manual dispatch can choose `policy`, `auto`, `github-hosted`, or `self-hosted`; use `runner: auto` to force hosted-first failover for that dispatch. In `auto`, the caller first runs a repository-code-free hosted availability probe and falls back to trusted self-hosted only if that probe fails. See `docs/RUNNERS.md`.
 
 See `docs/ADOPTION.md` and `docs/CONTRACTS.md` for the complete consumer contract.
 
