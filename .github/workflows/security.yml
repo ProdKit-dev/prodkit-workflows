@@ -37,17 +37,3 @@ jobs:
       container_enabled: false
       custom_enabled: true
       custom_script: .prodkit/workflows/security-custom.sh
-
-  self-hosted-canary:
-    name: self-hosted-canary
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: ./.github/workflows/reusable-security.yml
-    with:
-      runner_json: '["self-hosted","Linux","X64"]'
-      secret_scan_enabled: true
-      sbom_enabled: true
-      python_enabled: false
-      node_enabled: false
-      container_enabled: false
-      custom_enabled: true
-      custom_script: .prodkit/workflows/security-custom.sh
