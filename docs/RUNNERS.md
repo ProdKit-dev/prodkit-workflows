@@ -1,24 +1,53 @@
 # Runner Requirements
 
-ProdKit callers are **GitHub-hosted first**. Generated CI, Security, and Release callers target `ubuntu-latest` for normal execution and expose a manual `runner` choice that can switch the same reusable workflow to `["self-hosted","Linux","X64"]` when GitHub-hosted capacity, billing limits, or policy make hosted runners unavailable.
+ProdKit supports both GitHub-hosted and self-hosted runners through one runner-selection contract. Reusable workflows remain runner-agnostic through `runner_json`; thin callers decide which target to pass before GitHub routes the job.
 
-The reusable workflows still accept `runner_json` as the low-level runner contract. Existing consumers that already pass an explicit value remain unchanged. New generated callers always pass an explicit runner target rather than relying on the reusable workflow default.
+## Policy variable
 
-## Failover semantics
+Generated callers read the non-secret GitHub Actions configuration variable `PRODKIT_RUNNER_MODE` from the caller repository context.
+
+| `PRODKIT_RUNNER_MODE` | Automatic trusted events |
+| --- | --- |
+| `github-hosted` | `ubuntu-latest` |
+| `self-hosted` | `["self-hosted","Linux","X64"]` |
+| unset or any other value | `ubuntu-latest` |
+
+The variable may be defined at organization level to control many repositories at once. A repository-level variable with the same name overrides the organization-level value, allowing an exceptional repository to choose a different runner policy.
+
+For CI and Security pull requests, fork-originated code is always forced to GitHub-hosted execution even when the configured policy is `self-hosted`. This prevents organization/repository policy from accidentally routing untrusted fork code to a persistent runner.
+
+## Manual override
+
+Generated `workflow_dispatch` callers expose:
+
+- `runner: policy` — use `PRODKIT_RUNNER_MODE`;
+- `runner: github-hosted` — force `ubuntu-latest` for this dispatch;
+- `runner: self-hosted` — force `["self-hosted","Linux","X64"]` for this dispatch.
+
+Release is dispatch-only, so its default `runner: policy` applies the same condition-based selection without changing the release state machine. Organization Audit uses the same three-state runner input.
+
+## Hosted quota/capacity incidents
 
 GitHub Actions does not provide an `OR` or ordered-fallback form of `runs-on`. A `runs-on` array means that a runner must match **all** labels in the array; it does not mean “try GitHub-hosted, then self-hosted.” Therefore ProdKit does not claim transparent native fallback.
 
-For a hosted-runner quota/capacity incident, rerun the exact workflow/ref with `runner: self-hosted`. The workflow uses the same pinned reusable contract and emits the same stable required job names. Automatic detection and redispatch requires a separate trusted watchdog/controller and is intentionally not emulated with duplicate release jobs or race-prone parallel execution.
+When GitHub-hosted minutes, billing, capacity, or policy make hosted execution unavailable, there are two supported recovery paths:
 
-CI and Security concurrency belongs to each thin caller, not the reusable workflow. That lets distinct calls to the reusable contract coexist when testing runner portability, while a new run of the same caller/ref still cancels obsolete work. Release keeps its version-scoped non-cancelling lock because publication must never race.
+1. set `PRODKIT_RUNNER_MODE=self-hosted` at organization or repository level so subsequent automatic runs select self-hosted; or
+2. redispatch the exact workflow/ref with `runner: self-hosted`.
+
+Automatic detection of a hosted-runner failure and subsequent variable change/redispatch requires a separate trusted watchdog/controller. It should operate on the exact repository, workflow, and source SHA and must not create competing release executions.
 
 A self-hosted runner can help when the GitHub-hosted execution pool or account allowance is unavailable, but it cannot bypass a complete GitHub Actions control-plane outage because GitHub still queues and dispatches self-hosted jobs.
 
+## Concurrency
+
+CI and Security concurrency belongs to each thin caller, not the reusable workflow. That lets distinct calls to the reusable contract coexist while a new run of the same caller/ref still cancels obsolete work. Release keeps its version-scoped non-cancelling lock because publication must never race.
+
 ## Security boundary
 
-Never route untrusted public fork code to a persistent self-hosted runner. GitHub recommends self-hosted runners primarily for private repositories because fork pull requests can execute attacker-controlled code on the runner. `prodkit-workflows` itself is public, so its automatic pull-request CI and Security paths use GitHub-hosted runners; self-hosted execution is an explicit manual failover path only.
+Never route untrusted public fork code to a persistent self-hosted runner. `prodkit-workflows` itself is public, so its caller expression forces fork-originated pull requests onto GitHub-hosted runners even if `PRODKIT_RUNNER_MODE=self-hosted`.
 
-For private repositories, self-hosted fallback should still reject fork-originated pull requests unless the runner is ephemeral and intentionally provisioned for untrusted workloads.
+For private repositories, keep the same fail-closed rule unless the runner is intentionally ephemeral and isolated for untrusted code.
 
 ## Self-hosted requirements
 
