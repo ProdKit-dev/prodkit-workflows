@@ -1,0 +1,143 @@
+name: Reusable Runner Policy
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: Runner mode: policy, auto, github-hosted, or self-hosted.
+        required: false
+        type: string
+        default: policy
+      hosted_runner_json:
+        description: JSON value accepted by runs-on for the GitHub-hosted lane.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      self_hosted_runner_json:
+        description: JSON value accepted by runs-on for the trusted self-hosted lane.
+        required: false
+        type: string
+        default: '["self-hosted","Linux","X64"]'
+      fork_safe:
+        description: Force fork-originated pull requests onto the hosted lane.
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      runner_json:
+        description: Resolved JSON value for downstream runs-on.
+        value: ${{ jobs.resolve.outputs.runner_json }}
+      lane:
+        description: Resolved logical runner lane.
+        value: ${{ jobs.resolve.outputs.lane }}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Hosted runner availability
+    if: >-
+      (
+        (inputs.mode == 'auto') ||
+        ((inputs.mode == 'policy') && ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto')))
+      ) &&
+      (
+        !inputs.fork_safe ||
+        (github.event_name != 'pull_request') ||
+        (github.event.pull_request.head.repo.full_name == github.repository)
+      )
+    runs-on: ${{ fromJSON(inputs.hosted_runner_json) }}
+    timeout-minutes: 2
+    continue-on-error: true
+    outputs:
+      available: ${{ steps.probe.outputs.available }}
+    steps:
+      - id: probe
+        name: Confirm hosted runner availability
+        run: echo "available=true" >> "$GITHUB_OUTPUT"
+
+  resolve:
+    name: Resolve runner lane
+    needs: probe
+    if: always() && !cancelled()
+    runs-on: >-
+      ${{ fromJSON(
+        (
+          (
+            !inputs.fork_safe ||
+            (github.event_name != 'pull_request') ||
+            (github.event.pull_request.head.repo.full_name == github.repository)
+          ) &&
+          (
+            (inputs.mode == 'self-hosted') ||
+            ((inputs.mode == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')) ||
+            (
+              (
+                (inputs.mode == 'auto') ||
+                ((inputs.mode == 'policy') && ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto')))
+              ) &&
+              (needs.probe.outputs.available != 'true')
+            )
+          )
+        ) && inputs.self_hosted_runner_json || inputs.hosted_runner_json
+      ) }}
+    timeout-minutes: 5
+    outputs:
+      runner_json: ${{ steps.resolve.outputs.runner_json }}
+      lane: ${{ steps.resolve.outputs.lane }}
+    steps:
+      - id: resolve
+        name: Publish resolved runner lane
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          ORG_MODE: ${{ vars.PRODKIT_RUNNER_MODE }}
+          HOSTED_RUNNER_JSON: ${{ inputs.hosted_runner_json }}
+          SELF_HOSTED_RUNNER_JSON: ${{ inputs.self_hosted_runner_json }}
+          HOSTED_AVAILABLE: ${{ needs.probe.outputs.available }}
+          FORK_SAFE: ${{ inputs.fork_safe }}
+          IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            policy|auto|github-hosted|self-hosted) ;;
+            *) echo "unsupported runner mode: $MODE" >&2; exit 2 ;;
+          esac
+          case "$ORG_MODE" in
+            ''|auto|github-hosted|self-hosted) ;;
+            *) echo "unsupported PRODKIT_RUNNER_MODE: $ORG_MODE" >&2; exit 2 ;;
+          esac
+
+          effective="$MODE"
+          if [[ "$effective" == "policy" ]]; then
+            effective="${ORG_MODE:-auto}"
+          fi
+          if [[ "$FORK_SAFE" == "true" && "$IS_FORK" == "true" ]]; then
+            effective="github-hosted"
+          elif [[ "$effective" == "auto" ]]; then
+            if [[ "$HOSTED_AVAILABLE" == "true" ]]; then
+              effective="github-hosted"
+            else
+              effective="self-hosted"
+            fi
+          fi
+
+          if [[ "$effective" == "self-hosted" ]]; then
+            runner_json="$SELF_HOSTED_RUNNER_JSON"
+          else
+            runner_json="$HOSTED_RUNNER_JSON"
+          fi
+
+          python3 - "$runner_json" <<'PY'
+          import json, sys
+          value = json.loads(sys.argv[1])
+          if not isinstance(value, (str, list)) or (isinstance(value, list) and not value):
+              raise SystemExit("runner JSON must decode to a non-empty string or array")
+          PY
+
+          {
+            echo "runner_json=$runner_json"
+            echo "lane=$effective"
+          } >> "$GITHUB_OUTPUT"
+          echo "resolved runner lane: $effective"
