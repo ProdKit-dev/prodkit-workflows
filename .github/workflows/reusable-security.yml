@@ -95,9 +95,10 @@ jobs:
             --log-opts="--remotes=origin --tags HEAD"
           )
           if [[ -n "$GITLEAKS_CONFIG_PATH" ]]; then
-            case "$GITLEAKS_CONFIG_PATH" in
-              /*|*'..'*) echo "invalid gitleaks_config_path" >&2; exit 1 ;;
-            esac
+            case "$GITLEAKS_CONFIG_PATH" in /*) echo "gitleaks_config_path must be repository-relative" >&2; exit 1 ;; esac
+            repo_root="$(realpath .)"
+            config_resolved="$(realpath "$GITLEAKS_CONFIG_PATH")"
+            [[ "$config_resolved" == "$repo_root/"* ]] || { echo "gitleaks_config_path escapes repository" >&2; exit 1; }
             test -f "$GITLEAKS_CONFIG_PATH" && test ! -L "$GITLEAKS_CONFIG_PATH"
             args+=(--config "/repo/$GITLEAKS_CONFIG_PATH")
           fi
@@ -124,15 +125,22 @@ jobs:
         with: {persist-credentials: false, fetch-depth: 0}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with: {version: "0.10.0", enable-cache: true}
-      - name: Run Python security contract
+      - name: Validate Python security adapter path
         env:
           CONTRACT_SCRIPT: ${{ inputs.python_script }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
           test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+      - name: Run Python security contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+        shell: bash
+        run: bash "$CONTRACT_SCRIPT"
 
   node:
     name: Node dependency audit
@@ -144,15 +152,22 @@ jobs:
         with: {persist-credentials: false, fetch-depth: 0}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: "24"}
-      - name: Run Node security contract
+      - name: Validate Node security adapter path
         env:
           CONTRACT_SCRIPT: ${{ inputs.node_script }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
           test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+      - name: Run Node security contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+        shell: bash
+        run: bash "$CONTRACT_SCRIPT"
 
   container:
     name: Container vulnerability scan
@@ -162,6 +177,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 0}
+      - name: Validate container security adapter path
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.container_build_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
       - name: Build security image contract
         env:
           CONTRACT_SCRIPT: ${{ inputs.container_build_script }}
@@ -169,8 +195,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
-          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
           bash "$CONTRACT_SCRIPT"
           docker image inspect "$PRODKIT_SECURITY_IMAGE" >/dev/null
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -231,15 +255,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Run custom security contract
+      - name: Validate custom security adapter path
         env:
           CONTRACT_SCRIPT: ${{ inputs.custom_script }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
           test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
-          bash "$CONTRACT_SCRIPT"
+      - name: Run custom security contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.custom_script }}
+        shell: bash
+        run: bash "$CONTRACT_SCRIPT"
 
   required:
     name: Security Required
