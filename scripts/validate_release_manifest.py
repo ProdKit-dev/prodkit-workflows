@@ -116,10 +116,13 @@ def validate_shape(data: Any) -> dict[str, Any]:
 
 def validate(root: pathlib.Path, manifest_path: pathlib.Path, version: str) -> dict[str, Any]:
     root = root.resolve()
-    manifest_path = manifest_path.resolve()
+    raw_manifest = manifest_path
+    if raw_manifest.is_symlink():
+        raise ValueError("manifest must be a regular non-symlink file")
+    manifest_path = raw_manifest.resolve()
     if manifest_path == root or root not in manifest_path.parents:
         raise ValueError("manifest escapes root")
-    if not manifest_path.is_file() or manifest_path.is_symlink():
+    if not manifest_path.is_file():
         raise ValueError("manifest must be a regular non-symlink file")
 
     data = validate_shape(json.loads(manifest_path.read_text(encoding="utf-8")))
@@ -160,9 +163,12 @@ def validate(root: pathlib.Path, manifest_path: pathlib.Path, version: str) -> d
         raise ValueError(f"changelog missing heading: {heading}")
 
     build = data["build"]
+    raw_script = root / pathlib.Path(build["script"])
+    if raw_script.is_symlink():
+        raise ValueError("build script invalid")
     script = _inside(root, build["script"])
     artifact = _inside(root, build["artifact_dir"])
-    if not script.is_file() or script.is_symlink():
+    if not script.is_file():
         raise ValueError("build script invalid")
     if artifact.exists() and not artifact.is_dir():
         raise ValueError("artifact_dir exists but is not a directory")
