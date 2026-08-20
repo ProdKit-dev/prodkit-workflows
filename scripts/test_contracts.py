@@ -334,7 +334,7 @@ def main() -> None:
         "PRODKIT_RUNNER_MODE",
         "Hosted-first failover contract",
         "fork-originated pull requests are always forced onto GitHub-hosted runners",
-        "genuine test",
+        "real CI test failure",
         "at least one payload",
         "Release publication state machine",
         "Release metadata repair",
