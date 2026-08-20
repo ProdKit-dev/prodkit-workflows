@@ -17,6 +17,15 @@ on:
         required: false
         default: prodkit-
         type: string
+      runner:
+        description: Runner override; policy uses PRODKIT_RUNNER_MODE
+        required: true
+        type: choice
+        default: policy
+        options:
+          - policy
+          - github-hosted
+          - self-hosted
 
 permissions:
   contents: read
@@ -29,5 +38,6 @@ jobs:
       workflows_repository: ProdKit-dev/prodkit-workflows
       required_sha: ${{ inputs.required_sha }}
       repository_prefix: ${{ inputs.repository_prefix }}
+      runner_json: ${{ ((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
     secrets:
       org_audit_token: ${{ secrets.ORG_AUDIT_TOKEN }}
