@@ -2,6 +2,22 @@
 
 This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. The reusable workflows, generated caller templates, bootstrap output, local validators, and contract tests must implement the same guarantees. A change to one without the corresponding contract/test change is drift.
 
+## Repository layers and file ownership
+
+`prodkit-workflows` deliberately has three different workflow-related surfaces. They are not expected to contain the same number of files.
+
+| Surface | Purpose | Canonical files |
+| --- | --- | --- |
+| `.github/workflows/` | Executable GitHub Actions callers plus reusable workflow implementations owned by this control-plane repository | `ci.yml`, `security.yml`, `release.yml`, `org-audit.yml`, `reusable-ci.yml`, `reusable-security.yml`, `reusable-release.yml`, `reusable-org-audit.yml` |
+| `templates/consumer/.prodkit/workflows/` | Complete consumer adapter catalog emitted by bootstrap | `ci-hygiene.sh`, `ci-python.sh`, `ci-node.sh`, `ci-postgres.sh`, `ci-container.sh`, `ci-custom.sh`, `security-python.sh`, `security-node.sh`, `security-container-build.sh`, `security-custom.sh`, `release-build.sh` |
+| `.prodkit/workflows/` | Adapters that this repository itself currently enables when testing/releasing the control plane | `ci-hygiene.sh`, `ci-custom.sh`, `security-custom.sh`, `release-build.sh` |
+
+The adapter sections below define the **available consumer interfaces**, not a requirement that every repository keep every adapter file active. A consumer may delete or omit an adapter only when the corresponding capability is disabled in its caller. If a capability is enabled, its configured adapter must exist and satisfy this contract.
+
+The control-plane repository itself intentionally has only four `.prodkit/workflows/` files because its own CI disables Python, Node, PostgreSQL, and container adapters, while its own Security disables Python, Node, and container adapters. Central Gitleaks and source-SBOM jobs do not require consumer adapter files. `release-build.sh` is always repository-owned when Release is used.
+
+The GitHub Actions UI normally surfaces the four top-level control-plane workflows (`CI`, `Security`, `Release`, and `Organization Audit`) as operator-facing workflows. The four `reusable-*.yml` files are implementation entry points invoked through `workflow_call`; they are not additional product-level workflow concepts.
+
 ## Control-plane pinning and runners
 
 Consumer repositories must call reusable workflows through an exact lowercase 40-character Git commit SHA. Floating branches and tags are not an accepted production contract.
@@ -14,11 +30,13 @@ CI and Security concurrency belongs to the thin caller so independent calls to t
 
 ## Adapter path contract
 
-Every enabled CI or Security adapter path must resolve to a regular, non-symlink file beneath the checked-out repository's `.prodkit/workflows/` directory. Absolute paths, traversal outside that directory, and symlink files are rejected before execution.
+Every **enabled** CI or Security adapter path must resolve to a regular, non-symlink file beneath the checked-out repository's `.prodkit/workflows/` directory. Absolute paths, traversal outside that directory, and symlink files are rejected before execution.
 
-Disabled capabilities are represented by GitHub Actions as `skipped`; an enabled capability must finish `success` to satisfy the final aggregator.
+Disabled capabilities do not require their adapter file to exist. They are represented by GitHub Actions as `skipped`; an enabled capability must finish `success` to satisfy the final aggregator.
 
 ## CI adapters
+
+The reusable CI contract exposes these optional consumer adapters:
 
 - `ci-hygiene.sh`: repository structure, architecture, generated-file, migration immutability, documentation, and release metadata checks.
 - `ci-python.sh`: receives `PRODKIT_PYTHON_VERSION` and owns dependency sync plus Python checks for that version.
@@ -30,6 +48,8 @@ Disabled capabilities are represented by GitHub Actions as `skipped`; an enabled
 The stable final job is `CI Required`. It accepts only `success` or `skipped` for every declared capability and fails closed on any other result.
 
 ## Security adapters and central evidence
+
+The reusable Security contract exposes these optional consumer adapters:
 
 - `security-python.sh`: Python runtime dependency audit.
 - `security-node.sh`: Node runtime dependency audit.
