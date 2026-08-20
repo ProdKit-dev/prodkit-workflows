@@ -190,7 +190,7 @@ def main() -> None:
         "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
         'npm install --global "pnpm@${{ inputs.pnpm_version }}"',
         "at least one version source required",
-        "unknown release manifest keys",
+        "reject_unknown(manifest",
         "Validate consumer release payload contract",
         "consumer release payload set is empty",
         "consumer emitted central-owned artifact",
