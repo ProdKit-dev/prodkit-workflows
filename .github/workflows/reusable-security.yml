@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ghcr.io/gitleaks/gitleaks:v8.30.1
+      gitleaks_config_path:
+        description: Optional repository-relative Gitleaks config path for reviewed allowlists.
+        required: false
+        type: string
+        default: ""
       sbom_enabled:
         required: false
         type: boolean
@@ -74,11 +79,40 @@ jobs:
       - name: Gitleaks full-history scan
         env:
           GITLEAKS_IMAGE: ${{ inputs.gitleaks_image }}
+          GITLEAKS_CONFIG_PATH: ${{ inputs.gitleaks_config_path }}
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD:/repo:ro" "$GITLEAKS_IMAGE" \
-            git /repo --redact --no-banner --exit-code 1 --log-opts="--remotes=origin --tags HEAD"
+          report="$RUNNER_TEMP/gitleaks-report.json"
+          rm -f "$report"
+          args=(
+            git /repo
+            --redact
+            --no-banner
+            --exit-code 1
+            --report-format json
+            --report-path /out/gitleaks-report.json
+            --log-opts="--remotes=origin --tags HEAD"
+          )
+          if [[ -n "$GITLEAKS_CONFIG_PATH" ]]; then
+            case "$GITLEAKS_CONFIG_PATH" in
+              /*|*'..'*) echo "invalid gitleaks_config_path" >&2; exit 1 ;;
+            esac
+            test -f "$GITLEAKS_CONFIG_PATH" && test ! -L "$GITLEAKS_CONFIG_PATH"
+            args+=(--config "/repo/$GITLEAKS_CONFIG_PATH")
+          fi
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP:/out" \
+            "$GITLEAKS_IMAGE" "${args[@]}"
+      - name: Preserve redacted Gitleaks evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-${{ github.sha }}
+          path: ${{ runner.temp }}/gitleaks-report.json
+          if-no-files-found: warn
+          retention-days: 30
 
   python:
     name: Python dependency audit
