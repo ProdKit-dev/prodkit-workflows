@@ -1,0 +1,336 @@
+name: Reusable Release Metadata Repair
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Published SemVer without the v prefix.
+        required: true
+        type: string
+      source_sha:
+        description: Immutable commit SHA already referenced by the published release tag.
+        required: true
+        type: string
+      runner_json:
+        description: JSON value accepted by runs-on.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      main_branch:
+        required: false
+        type: string
+        default: main
+      manifest_path:
+        required: false
+        type: string
+        default: .prodkit/release.json
+      environment:
+        required: false
+        type: string
+        default: release
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-metadata-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Guarded release metadata repair
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_TAG: v${{ inputs.version }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      MAIN_BRANCH: ${{ inputs.main_branch }}
+      MANIFEST_PATH: ${{ inputs.manifest_path }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate request shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_REF}" = "refs/heads/${MAIN_BRANCH}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.main_branch }}
+
+      - name: Verify canonical metadata source is current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$MAIN_BRANCH" --tags --force
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$MAIN_BRANCH")"
+
+      - name: Reconcile published release metadata without changing immutable payload
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          root = pathlib.Path.cwd().resolve()
+          repo = os.environ["GITHUB_REPOSITORY"]
+          version = os.environ["RELEASE_VERSION"]
+          tag = os.environ["RELEASE_TAG"]
+          source_sha = os.environ["SOURCE_SHA"]
+          token = os.environ["GH_TOKEN"]
+          manifest_path = pathlib.Path(os.environ["MANIFEST_PATH"])
+
+          if manifest_path.is_absolute():
+              raise SystemExit("manifest path must be repository-relative")
+          raw_manifest = root / manifest_path
+          if raw_manifest.is_symlink():
+              raise SystemExit("manifest must not be a symlink")
+          resolved_manifest = raw_manifest.resolve()
+          if resolved_manifest == root or root not in resolved_manifest.parents:
+              raise SystemExit("manifest escapes repository")
+          if not resolved_manifest.is_file():
+              raise SystemExit("release manifest missing")
+
+          manifest = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+          if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+              raise SystemExit("unsupported release manifest schema")
+          unknown = sorted(set(manifest) - {"schema_version", "version", "notes", "build", "release"})
+          if unknown:
+              raise SystemExit("unknown release manifest keys: " + ", ".join(unknown))
+
+          notes = manifest.get("notes")
+          if not isinstance(notes, dict):
+              raise SystemExit("release manifest notes block missing")
+          unknown_notes = sorted(
+              set(notes) - {"path_template", "changelog_path", "changelog_heading_template"}
+          )
+          if unknown_notes:
+              raise SystemExit("unknown notes keys: " + ", ".join(unknown_notes))
+          template = notes.get("path_template")
+          if not isinstance(template, str) or not template:
+              raise SystemExit("notes.path_template must be a non-empty string")
+          changelog_path = notes.get("changelog_path", "CHANGELOG.md")
+          heading_template = notes.get("changelog_heading_template", "## [{version}]")
+          if not isinstance(changelog_path, str) or not changelog_path:
+              raise SystemExit("notes.changelog_path must be a non-empty string")
+          if not isinstance(heading_template, str) or not heading_template:
+              raise SystemExit("notes.changelog_heading_template must be a non-empty string")
+
+          def inside(relative: str) -> pathlib.Path:
+              raw = pathlib.Path(relative)
+              if raw.is_absolute():
+                  raise SystemExit(f"absolute path is not allowed: {relative}")
+              path = (root / raw).resolve()
+              if path == root or root not in path.parents:
+                  raise SystemExit(f"path escapes repository: {relative}")
+              return path
+
+          notes_path_text = template.format(version=version, tag=tag)
+          notes_path = inside(notes_path_text)
+          if notes_path.is_symlink() or not notes_path.is_file():
+              raise SystemExit(f"missing canonical release notes: {notes_path_text}")
+          expected_body = notes_path.read_text(encoding="utf-8")
+
+          changelog = inside(changelog_path)
+          if changelog.is_symlink() or not changelog.is_file():
+              raise SystemExit(f"missing changelog: {changelog_path}")
+          heading = heading_template.format(version=version, tag=tag)
+          if heading not in changelog.read_text(encoding="utf-8"):
+              raise SystemExit(f"changelog missing heading: {heading}")
+
+          release_block = manifest.get("release", {})
+          if not isinstance(release_block, dict):
+              raise SystemExit("release manifest release block must be an object")
+          unknown_release = sorted(set(release_block) - {"name_template"})
+          if unknown_release:
+              raise SystemExit("unknown release keys: " + ", ".join(unknown_release))
+          name_template = release_block.get("name_template", "{repository} {tag}")
+          if not isinstance(name_template, str) or not name_template:
+              raise SystemExit("release.name_template must be a non-empty string")
+          repository_name = repo.split("/", 1)[-1]
+          expected_name = name_template.format(
+              repository=repository_name,
+              version=version,
+              tag=tag,
+          )
+
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-release-metadata",
+          }
+
+          def request(method: str, url: str, payload=None, *, accept=None):
+              request_headers = dict(headers)
+              if accept is not None:
+                  request_headers["Accept"] = accept
+              data = None
+              if payload is not None:
+                  data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                  request_headers["Content-Type"] = "application/json"
+              req = urllib.request.Request(url, data=data, headers=request_headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as response:
+                      return response.read(), response.status
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return None, 404
+                  print(exc.read().decode("utf-8", errors="replace"))
+                  raise
+
+          api = f"https://api.github.com/repos/{repo}"
+          encoded_tag = urllib.parse.quote(tag, safe="")
+
+          def resolve_tag() -> str:
+              raw, status = request("GET", f"{api}/git/ref/tags/{encoded_tag}")
+              if status != 200:
+                  raise SystemExit(f"immutable tag does not exist: {tag}")
+              ref = json.loads(raw)
+              obj = ref.get("object")
+              if not isinstance(obj, dict):
+                  raise SystemExit("tag reference is malformed")
+              obj_type = obj.get("type")
+              sha = obj.get("sha")
+              if not isinstance(sha, str):
+                  raise SystemExit("tag reference has no SHA")
+              if obj_type == "commit":
+                  return sha
+              if obj_type != "tag":
+                  raise SystemExit(f"unsupported tag object type: {obj_type}")
+              raw_tag, status_tag = request("GET", f"{api}/git/tags/{sha}")
+              if status_tag != 200:
+                  raise SystemExit("annotated tag object is missing")
+              tag_object = json.loads(raw_tag).get("object")
+              if (
+                  not isinstance(tag_object, dict)
+                  or tag_object.get("type") != "commit"
+                  or not isinstance(tag_object.get("sha"), str)
+              ):
+                  raise SystemExit("annotated tag must point directly to a commit")
+              return tag_object["sha"]
+
+          if resolve_tag() != source_sha:
+              raise SystemExit(f"immutable tag {tag} does not resolve to requested source SHA")
+
+          raw_release, status = request("GET", f"{api}/releases/tags/{encoded_tag}")
+          if status != 200:
+              raise SystemExit(f"published GitHub Release does not exist: {tag}")
+          release = json.loads(raw_release)
+          if release.get("tag_name") != tag or release.get("draft") is not False:
+              raise SystemExit("release-by-tag returned an unexpected publication state")
+          release_id = release.get("id")
+          if not isinstance(release_id, int):
+              raise SystemExit("published release is missing its numeric id")
+          prerelease = release.get("prerelease")
+
+          def asset_identity(value):
+              assets = value.get("assets")
+              if not isinstance(assets, list):
+                  raise SystemExit("published release assets are missing")
+              result = []
+              for asset in assets:
+                  if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+                      raise SystemExit("published release contains malformed asset metadata")
+                  result.append(
+                      (
+                          asset.get("id"),
+                          asset["name"],
+                          asset.get("size"),
+                          asset.get("digest"),
+                      )
+                  )
+              return tuple(sorted(result, key=lambda item: item[1]))
+
+          def verify_assets(value):
+              assets_list = value.get("assets")
+              if not isinstance(assets_list, list):
+                  raise SystemExit("published release assets are missing")
+              assets = {asset.get("name"): asset for asset in assets_list}
+              if None in assets or "SHA256SUMS" not in assets:
+                  raise SystemExit("published release lacks a valid SHA256SUMS asset")
+              sums_raw, sums_status = request(
+                  "GET",
+                  assets["SHA256SUMS"]["url"],
+                  accept="application/octet-stream",
+              )
+              if sums_status != 200:
+                  raise SystemExit("cannot download published SHA256SUMS")
+              expected = {}
+              for raw_line in sums_raw.decode("utf-8").splitlines():
+                  line = raw_line.strip()
+                  if not line:
+                      continue
+                  parts = line.split(None, 1)
+                  if len(parts) != 2:
+                      raise SystemExit(f"malformed SHA256SUMS line: {raw_line}")
+                  digest, name = parts
+                  name = name.lstrip("*")
+                  if len(digest) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in digest):
+                      raise SystemExit(f"malformed SHA-256 digest for {name}")
+                  if pathlib.Path(name).name != name or name in expected:
+                      raise SystemExit(f"unsafe or duplicate checksum asset: {name}")
+                  expected[name] = digest.lower()
+              expected_assets = set(expected) | {"SHA256SUMS"}
+              if set(assets) != expected_assets:
+                  raise SystemExit(
+                      f"published asset set mismatch: remote={sorted(assets)} "
+                      f"expected={sorted(expected_assets)}"
+                  )
+              for name, digest in sorted(expected.items()):
+                  payload_raw, payload_status = request(
+                      "GET",
+                      assets[name]["url"],
+                      accept="application/octet-stream",
+                  )
+                  if payload_status != 200 or hashlib.sha256(payload_raw).hexdigest() != digest:
+                      raise SystemExit(f"published checksum mismatch: {name}")
+                  api_digest = assets[name].get("digest")
+                  if api_digest and api_digest != f"sha256:{digest}":
+                      raise SystemExit(f"GitHub asset digest mismatch: {name}")
+              return asset_identity(value)
+
+          before_assets = verify_assets(release)
+
+          if release.get("name") != expected_name or release.get("body") != expected_body:
+              request(
+                  "PATCH",
+                  f"{api}/releases/{release_id}",
+                  {"name": expected_name, "body": expected_body},
+              )
+              print(f"reconciled mutable GitHub Release metadata for {tag}")
+          else:
+              print(f"GitHub Release metadata already canonical for {tag}")
+
+          verified_raw, verified_status = request("GET", f"{api}/releases/tags/{encoded_tag}")
+          if verified_status != 200:
+              raise SystemExit("published release disappeared during metadata repair")
+          verified = json.loads(verified_raw)
+          if verified.get("tag_name") != tag:
+              raise SystemExit("release tag changed during metadata repair")
+          if verified.get("draft") is not False or verified.get("prerelease") != prerelease:
+              raise SystemExit("release publication flags changed during metadata repair")
+          if verified.get("name") != expected_name or verified.get("body") != expected_body:
+              raise SystemExit("release metadata does not match the canonical manifest/docs after repair")
+          if resolve_tag() != source_sha:
+              raise SystemExit("immutable tag moved during metadata repair")
+          after_assets = verify_assets(verified)
+          if after_assets != before_assets:
+              raise SystemExit("published asset identity changed during metadata-only repair")
+
+          print(
+              f"verified metadata-only repair: {expected_name}; "
+              f"tag={tag}; source={source_sha}; assets={len(after_assets)} unchanged"
+          )
+          PY
