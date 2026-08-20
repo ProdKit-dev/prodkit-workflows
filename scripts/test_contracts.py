@@ -9,6 +9,38 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "scripts/validate_release_manifest.py"
 
+EXPECTED_GITHUB_WORKFLOWS = {
+    "ci.yml",
+    "security.yml",
+    "release.yml",
+    "org-audit.yml",
+    "reusable-ci.yml",
+    "reusable-security.yml",
+    "reusable-release.yml",
+    "reusable-org-audit.yml",
+}
+
+EXPECTED_CONSUMER_ADAPTERS = {
+    "ci-hygiene.sh",
+    "ci-python.sh",
+    "ci-node.sh",
+    "ci-postgres.sh",
+    "ci-container.sh",
+    "ci-custom.sh",
+    "security-python.sh",
+    "security-node.sh",
+    "security-container-build.sh",
+    "security-custom.sh",
+    "release-build.sh",
+}
+
+EXPECTED_SELF_ADAPTERS = {
+    "ci-hygiene.sh",
+    "ci-custom.sh",
+    "security-custom.sh",
+    "release-build.sh",
+}
+
 
 def run_validator(root: pathlib.Path, version: str = "1.2.3", *, expect_success: bool) -> None:
     result = subprocess.run(
@@ -100,7 +132,30 @@ def main() -> None:
     )
     test_manifest_contract()
 
-    # Bootstrap must materialize immutable refs and all adapters.
+    github_workflows = {p.name for p in (ROOT / ".github/workflows").glob("*.yml")}
+    if github_workflows != EXPECTED_GITHUB_WORKFLOWS:
+        raise SystemExit(
+            "control-plane workflow surface drift: "
+            f"actual={sorted(github_workflows)} expected={sorted(EXPECTED_GITHUB_WORKFLOWS)}"
+        )
+
+    self_adapters = {p.name for p in (ROOT / ".prodkit/workflows").glob("*.sh")}
+    if self_adapters != EXPECTED_SELF_ADAPTERS:
+        raise SystemExit(
+            "control-plane self-adapter surface drift: "
+            f"actual={sorted(self_adapters)} expected={sorted(EXPECTED_SELF_ADAPTERS)}"
+        )
+
+    template_adapters = {
+        p.name for p in (ROOT / "templates/consumer/.prodkit/workflows").glob("*.sh")
+    }
+    if template_adapters != EXPECTED_CONSUMER_ADAPTERS:
+        raise SystemExit(
+            "consumer adapter template surface drift: "
+            f"actual={sorted(template_adapters)} expected={sorted(EXPECTED_CONSUMER_ADAPTERS)}"
+        )
+
+    # Bootstrap must materialize immutable refs and the exact adapter catalog.
     with tempfile.TemporaryDirectory() as td:
         dest = pathlib.Path(td) / "consumer"
         dest.mkdir()
@@ -140,8 +195,13 @@ def main() -> None:
 
         if not (dest / ".prodkit/release.json").is_file():
             raise SystemExit("bootstrap manifest missing")
-        if len(list((dest / ".prodkit/workflows").glob("*.sh"))) < 10:
-            raise SystemExit("bootstrap adapters incomplete")
+        generated_adapters = {p.name for p in (dest / ".prodkit/workflows").glob("*.sh")}
+        if generated_adapters != EXPECTED_CONSUMER_ADAPTERS:
+            raise SystemExit(
+                "bootstrap adapter catalog drift: "
+                f"actual={sorted(generated_adapters)} "
+                f"expected={sorted(EXPECTED_CONSUMER_ADAPTERS)}"
+            )
 
         release = (dest / ".github/workflows/release.yml").read_text()
         for required in (
@@ -159,6 +219,7 @@ def main() -> None:
     reusable_security = (ROOT / ".github/workflows/reusable-security.yml").read_text()
     reusable_release = (ROOT / ".github/workflows/reusable-release.yml").read_text()
     contracts = (ROOT / "docs/CONTRACTS.md").read_text()
+    readme = (ROOT / "README.md").read_text()
 
     for name, text in (
         ("CI", reusable_ci),
@@ -222,7 +283,9 @@ def main() -> None:
 
     for phrase in (
         "exact lowercase 40-character Git commit SHA",
-        "Adapter path contract",
+        "Repository layers and file ownership",
+        "Complete consumer adapter catalog",
+        "Disabled capabilities do not require their adapter file to exist",
         "at least one payload",
         "Release publication state machine",
         "required_workflows_json",
@@ -230,6 +293,11 @@ def main() -> None:
     ):
         if phrase not in contracts:
             raise SystemExit(f"CONTRACTS.md missing normative contract: {phrase}")
+
+    if "Hosted-first with explicit failover" not in readme:
+        raise SystemExit("README runner policy is not hosted-first")
+    if "default to `self-hosted" in readme:
+        raise SystemExit("README still claims self-hosted is the default")
 
     print("contract tests passed")
 
