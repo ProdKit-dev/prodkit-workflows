@@ -1,0 +1,96 @@
+name: Reusable CodeQL
+
+on:
+  workflow_call:
+    inputs:
+      runner_json:
+        description: JSON value accepted by runs-on, normally from Reusable Runner Policy.
+        required: true
+        type: string
+      languages_json:
+        required: false
+        type: string
+        default: '["python","javascript-typescript","actions"]'
+      check_script:
+        description: Optional repository-owned SARIF policy adapter under .prodkit/workflows.
+        required: false
+        type: string
+        default: ""
+      retention_days:
+        required: false
+        type: number
+        default: 14
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.languages_json) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Analyze locally
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          upload: never
+          upload-database: false
+          output: .artifacts/codeql/${{ matrix.language }}
+
+      - name: Validate CodeQL policy adapter
+        if: inputs.check_script != ''
+        shell: bash
+        env:
+          CHECK_SCRIPT: ${{ inputs.check_script }}
+        run: |
+          set -euo pipefail
+          case "$CHECK_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid CodeQL check path: $CHECK_SCRIPT" >&2; exit 2 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CHECK_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "CodeQL check path escapes .prodkit/workflows" >&2; exit 2; }
+          test -f "$CHECK_SCRIPT" && test ! -L "$CHECK_SCRIPT"
+
+      - name: Enforce repository CodeQL policy
+        if: inputs.check_script != ''
+        shell: bash
+        env:
+          CHECK_SCRIPT: ${{ inputs.check_script }}
+          PRODKIT_CODEQL_LANGUAGE: ${{ matrix.language }}
+          PRODKIT_CODEQL_OUTPUT_DIR: .artifacts/codeql/${{ matrix.language }}
+        run: bash "$CHECK_SCRIPT"
+
+      - name: Preserve SARIF evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-${{ matrix.language }}-${{ github.sha }}
+          path: .artifacts/codeql/${{ matrix.language }}/*.sarif
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+  required:
+    name: CodeQL Required
+    if: always()
+    needs: analyze
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify CodeQL matrix
+        env:
+          RESULT: ${{ needs.analyze.result }}
+        run: test "$RESULT" = "success"
