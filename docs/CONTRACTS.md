@@ -18,13 +18,23 @@ The control-plane repository itself intentionally has only four `.prodkit/workfl
 
 The GitHub Actions UI normally surfaces the four top-level control-plane workflows (`CI`, `Security`, `Release`, and `Organization Audit`) as operator-facing workflows. The four `reusable-*.yml` files are implementation entry points invoked through `workflow_call`; they are not additional product-level workflow concepts.
 
-## Control-plane pinning and runners
+## Control-plane pinning and runner policy
 
 Consumer repositories must call reusable workflows through an exact lowercase 40-character Git commit SHA. Floating branches and tags are not an accepted production contract.
 
-GitHub-hosted Ubuntu is the normal/default execution target for CI, Security, and Release. Thin callers may expose an explicit `github-hosted` / `self-hosted` dispatch choice and may pass `["self-hosted","Linux","X64"]` for trusted failover. Automatic pull-request execution in the public workflow repository must never send fork-originated code to a persistent self-hosted runner.
+All reusable workflow families accept an explicit `runner_json` target and default to GitHub-hosted Ubuntu. Generated callers implement one common runner policy for CI, Security, Release, and Organization Audit:
 
-GitHub Actions does not provide ordered `runs-on` fallback. Hosted-to-self-hosted failover is therefore an explicit redispatch of the same source SHA, not a claim of transparent native fallback.
+- `PRODKIT_RUNNER_MODE=github-hosted` selects `ubuntu-latest` for automatic events.
+- `PRODKIT_RUNNER_MODE=self-hosted` selects `["self-hosted","Linux","X64"]` for trusted automatic events.
+- an unset or unrecognized `PRODKIT_RUNNER_MODE` fails safe to GitHub-hosted Ubuntu.
+- manual `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE`, while the two explicit values override it for that dispatch.
+- fork-originated pull requests are always forced onto GitHub-hosted runners even when `PRODKIT_RUNNER_MODE=self-hosted`.
+
+`PRODKIT_RUNNER_MODE` is a non-secret GitHub Actions configuration variable. It may be defined at organization or repository level; repository-level configuration can override the organization policy for a specific consumer. The value is evaluated by the caller repository before the reusable job is routed.
+
+GitHub Actions does not provide ordered `runs-on` fallback. An array of runner labels means the selected runner must match all labels; it does not mean “try hosted, then self-hosted.” Therefore a hosted-runner quota/capacity incident can be handled by changing `PRODKIT_RUNNER_MODE` to `self-hosted` for subsequent runs or by redispatching the exact workflow/ref with `runner: self-hosted`, but transparent automatic detection/redispatch requires a separate trusted controller.
+
+A self-hosted runner still depends on the GitHub Actions control plane for queueing and dispatch and therefore cannot bypass a complete Actions service outage.
 
 CI and Security concurrency belongs to the thin caller so independent calls to the same reusable workflow can coexist. Reusable Release owns a version-scoped non-cancelling concurrency lock.
 
