@@ -9,7 +9,7 @@ It replaces copied repository-specific release state machines with immutable, re
 - **One release state machine.** A production release is requested manually with a semantic version and an exact `main` SHA. The release workflow proves that SHA, checks permanent CI/Security evidence, builds from it, attests it, creates an immutable tag, publishes through a draft-first transaction, and independently verifies published assets.
 - **Repository specialization without policy drift.** Consumers implement narrow `.prodkit/workflows/*.sh` adapters. The central workflows own orchestration, permissions, toolchain installation, isolation, final required gates, and release integrity.
 - **Immutable reuse.** Consumer caller workflows are generated with a full 40-character `prodkit-workflows` commit SHA. Floating `main`, `v0`, or branch references are intentionally rejected by the bootstrap/audit tooling.
-- **Hosted-first with explicit failover.** Generated CI, Security, and Release callers normally use GitHub-hosted Ubuntu. Trusted operators can explicitly redispatch the same source on `["self-hosted","Linux","X64"]`; GitHub Actions does not provide ordered automatic runner fallback.
+- **Conditional hosted/self-hosted policy.** CI, Security, Release, and Organization Audit can select GitHub-hosted Ubuntu or `["self-hosted","Linux","X64"]` from `PRODKIT_RUNNER_MODE`, with per-dispatch overrides and a fail-safe hosted default. Fork pull requests are never sent to persistent self-hosted runners.
 - **Fail closed.** Missing evidence, version drift, tag movement, path escapes, symlinked release payloads, empty artifact sets, incomplete drafts, or published checksum mismatches stop publication.
 - **Workflow syntax is a release gate.** The control-plane repository runs pinned `rhysd/actionlint:1.7.12` in its hygiene contract; malformed or semantically invalid Actions YAML cannot become a trusted central revision.
 
@@ -66,7 +66,11 @@ The generated files are deliberately thin:
     release-build.sh
 ```
 
-That is the complete adapter catalog. A consumer enables only the capabilities it needs. Disabled capabilities do not require their adapter file at runtime; enabled capabilities must point to a real non-symlink file beneath `.prodkit/workflows/`. See `docs/ADOPTION.md` and `docs/CONTRACTS.md`.
+That is the complete adapter catalog. A consumer enables only the capabilities it needs. Disabled capabilities do not require their adapter file at runtime; enabled capabilities must point to a real non-symlink file beneath `.prodkit/workflows/`.
+
+Runner selection is configuration, not copied workflow logic. Set the GitHub Actions variable `PRODKIT_RUNNER_MODE` to `github-hosted` or `self-hosted` at organization or repository level. Unset/unknown values use GitHub-hosted Ubuntu. Manual dispatch can choose `policy`, `github-hosted`, or `self-hosted`; see `docs/RUNNERS.md`.
+
+See `docs/ADOPTION.md` and `docs/CONTRACTS.md` for the complete consumer contract.
 
 ## Canonical release flow
 
@@ -107,6 +111,8 @@ publish release -> verify remote checksum set again
 ## Organization policy
 
 `rulesets/org-main.json` and `rulesets/org-release-tags.json` are importable organization ruleset templates. The main ruleset expects the stable reusable-workflow checks `ci / CI Required` and `security / Security Required`. GitHub renders reusable workflow status names as `<caller job name> / <reusable job name>`, so do not rename the caller jobs without updating the ruleset.
+
+`PRODKIT_RUNNER_MODE` may be configured once at organization level and overridden by an individual repository when needed. Changing that variable affects subsequent workflow routing without changing the pinned reusable workflow revision.
 
 Run `scripts/audit_org.py` (or the reusable organization audit) to detect repositories that copied release logic locally, float the central workflow ref, omit required wrappers, or point to an obsolete central SHA.
 

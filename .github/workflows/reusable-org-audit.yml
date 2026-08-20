@@ -17,9 +17,10 @@ on:
         type: string
         default: ""
       runner_json:
+        description: JSON value accepted by runs-on. Defaults to GitHub-hosted Ubuntu; callers may explicitly select trusted self-hosted labels.
         required: false
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '"ubuntu-latest"'
     secrets:
       org_audit_token:
         required: true
