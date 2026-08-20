@@ -118,8 +118,24 @@ def test_manifest_contract() -> None:
         raise SystemExit("release schema must require at least one version source")
 
 
+def assert_runner_policy(text: str, *, name: str, fork_safe: bool) -> None:
+    for required in (
+        "workflow_dispatch:",
+        "default: policy",
+        "PRODKIT_RUNNER_MODE",
+        "github-hosted",
+        "self-hosted",
+        '"ubuntu-latest"',
+        "inputs.runner == 'policy'",
+        "inputs.runner == 'self-hosted'",
+    ):
+        if required not in text:
+            raise SystemExit(f"runner policy missing from {name}: {required}")
+    if fork_safe and "github.event.pull_request.head.repo.full_name == github.repository" not in text:
+        raise SystemExit(f"fork safety missing from {name}")
+
+
 def main() -> None:
-    # Self manifest validates current version.
     subprocess.run(
         [
             "python3",
@@ -155,7 +171,7 @@ def main() -> None:
             f"actual={sorted(template_adapters)} expected={sorted(EXPECTED_CONSUMER_ADAPTERS)}"
         )
 
-    # Bootstrap must materialize immutable refs and the exact adapter catalog.
+    # Bootstrap must materialize immutable refs, conditional runner policy, and the exact adapter catalog.
     with tempfile.TemporaryDirectory() as td:
         dest = pathlib.Path(td) / "consumer"
         dest.mkdir()
@@ -177,16 +193,7 @@ def main() -> None:
             text = (dest / ".github/workflows" / name).read_text()
             if "example/workflows/.github/workflows/" not in text or f"@{sha}" not in text:
                 raise SystemExit("bootstrap pin failure")
-            for required in (
-                "workflow_dispatch:",
-                "github-hosted",
-                "self-hosted",
-                '"ubuntu-latest"',
-            ):
-                if required not in text:
-                    raise SystemExit(
-                        f"bootstrap hosted-first runner contract missing from {name}: {required}"
-                    )
+            assert_runner_policy(text, name=f"bootstrap {name}", fork_safe=name in {"ci.yml", "security.yml"})
 
         for name in ("ci.yml", "security.yml"):
             text = (dest / ".github/workflows" / name).read_text()
@@ -218,6 +225,7 @@ def main() -> None:
     reusable_ci = (ROOT / ".github/workflows/reusable-ci.yml").read_text()
     reusable_security = (ROOT / ".github/workflows/reusable-security.yml").read_text()
     reusable_release = (ROOT / ".github/workflows/reusable-release.yml").read_text()
+    reusable_org_audit = (ROOT / ".github/workflows/reusable-org-audit.yml").read_text()
     contracts = (ROOT / "docs/CONTRACTS.md").read_text()
     readme = (ROOT / "README.md").read_text()
 
@@ -225,6 +233,7 @@ def main() -> None:
         ("CI", reusable_ci),
         ("Security", reusable_security),
         ("Release", reusable_release),
+        ("Organization Audit", reusable_org_audit),
     ):
         if "default: '\"ubuntu-latest\"'" not in text:
             raise SystemExit(f"reusable {name} must default to GitHub-hosted")
@@ -262,8 +271,6 @@ def main() -> None:
         if required not in reusable_release:
             raise SystemExit(f"reusable Release contract missing: {required}")
 
-    # CI/Security concurrency belongs to the caller so two independent calls to
-    # the same reusable workflow can coexist. Release keeps its own version lock.
     for name in ("reusable-ci.yml", "reusable-security.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
         if "\nconcurrency:\n" in text:
@@ -271,13 +278,12 @@ def main() -> None:
     if "group: release-${{ inputs.version }}" not in reusable_release:
         raise SystemExit("reusable Release version concurrency contract missing")
 
-    # Public self callers are hosted-first with explicit trusted failover.
+    # The control-plane callers use the same conditional runner policy as generated consumers.
+    for name in ("ci.yml", "security.yml", "release.yml", "org-audit.yml"):
+        text = (ROOT / ".github/workflows" / name).read_text()
+        assert_runner_policy(text, name=f"self caller {name}", fork_safe=name in {"ci.yml", "security.yml"})
     for name in ("ci.yml", "security.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
-        if '"ubuntu-latest"' not in text or "workflow_dispatch:" not in text:
-            raise SystemExit(f"self caller is not hosted-first: {name}")
-        if "inputs.runner == 'self-hosted'" not in text:
-            raise SystemExit(f"self-hosted failover selector missing: {name}")
         if "concurrency:" not in text or "cancel-in-progress: true" not in text:
             raise SystemExit(f"self caller concurrency contract missing: {name}")
 
@@ -286,6 +292,8 @@ def main() -> None:
         "Repository layers and file ownership",
         "Complete consumer adapter catalog",
         "Disabled capabilities do not require their adapter file to exist",
+        "PRODKIT_RUNNER_MODE",
+        "fork-originated pull requests are always forced onto GitHub-hosted runners",
         "at least one payload",
         "Release publication state machine",
         "required_workflows_json",
@@ -294,8 +302,8 @@ def main() -> None:
         if phrase not in contracts:
             raise SystemExit(f"CONTRACTS.md missing normative contract: {phrase}")
 
-    if "Hosted-first with explicit failover" not in readme:
-        raise SystemExit("README runner policy is not hosted-first")
+    if "Conditional hosted/self-hosted policy" not in readme:
+        raise SystemExit("README runner policy is not conditional hosted/self-hosted")
     if "default to `self-hosted" in readme:
         raise SystemExit("README still claims self-hosted is the default")
 
