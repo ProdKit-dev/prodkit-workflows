@@ -1,0 +1,123 @@
+name: Reusable Release Proof
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact current main SHA to certify as a release candidate.
+        required: true
+        type: string
+      runner_json:
+        description: JSON value accepted by runs-on, normally from Reusable Runner Policy.
+        required: true
+        type: string
+      main_branch:
+        required: false
+        type: string
+        default: main
+      proof_script:
+        description: Repository-owned release-proof adapter under .prodkit/workflows.
+        required: false
+        type: string
+        default: .prodkit/workflows/release-proof.sh
+      timeout_minutes:
+        required: false
+        type: number
+        default: 90
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-proof-${{ inputs.source_sha }}
+  cancel-in-progress: true
+
+jobs:
+  proof:
+    name: Exact-source enterprise proof
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      MAIN_BRANCH: ${{ inputs.main_branch }}
+      PROOF_SCRIPT: ${{ inputs.proof_script }}
+    steps:
+      - name: Validate release-candidate request
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF" = "refs/heads/$MAIN_BRANCH"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.source_sha }}
+
+      - name: Assert exact current-main candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$MAIN_BRANCH" --tags --force
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse "origin/$MAIN_BRANCH")" = "$SOURCE_SHA"
+
+      - name: Validate release-proof adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PROOF_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid proof path: $PROOF_SCRIPT" >&2; exit 2 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$PROOF_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "proof path escapes .prodkit/workflows" >&2; exit 2; }
+          test -f "$PROOF_SCRIPT" && test ! -L "$PROOF_SCRIPT"
+
+      - name: Run repository release-proof contract
+        shell: bash
+        env:
+          PRODKIT_PROOF_OUTPUT_DIR: ${{ runner.temp }}/prodkit-release-proof
+        run: |
+          set -euo pipefail
+          rm -rf "$PRODKIT_PROOF_OUTPUT_DIR"
+          mkdir -p "$PRODKIT_PROOF_OUTPUT_DIR"
+          bash "$PROOF_SCRIPT"
+
+      - name: Assert source remained immutable
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+
+      - name: Write canonical proof receipt
+        shell: bash
+        env:
+          PRODKIT_PROOF_OUTPUT_DIR: ${{ runner.temp }}/prodkit-release-proof
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          out = pathlib.Path(os.environ["PRODKIT_PROOF_OUTPUT_DIR"])
+          out.mkdir(parents=True, exist_ok=True)
+          receipt = {
+              "schema_version": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+          }
+          (out / "release-proof.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload exact-source proof evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trusted-release-proof-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/prodkit-release-proof
+          if-no-files-found: error
+          retention-days: 30
