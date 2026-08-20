@@ -11,11 +11,7 @@ on:
         required: true
         type: choice
         default: policy
-        options:
-          - policy
-          - auto
-          - github-hosted
-          - self-hosted
+        options: [policy, auto, github-hosted, self-hosted]
 
 permissions:
   contents: read
@@ -25,50 +21,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  runner-probe:
-    name: Hosted runner availability
-    if: >-
-      (((github.event_name == 'workflow_dispatch') &&
-        ((inputs.runner == 'auto') ||
-         ((inputs.runner == 'policy') &&
-          ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto'))))) ||
-       ((github.event_name != 'workflow_dispatch') &&
-        ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto')))) &&
-      ((github.event_name != 'pull_request') ||
-       (github.event.pull_request.head.repo.full_name == github.repository))
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    continue-on-error: true
-    outputs:
-      available: ${{ steps.probe.outputs.available }}
-    steps:
-      - id: probe
-        name: Confirm GitHub-hosted runner availability
-        run: echo "available=true" >> "$GITHUB_OUTPUT"
+  runner:
+    name: runner
+    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-runner-policy.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+    with:
+      mode: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'policy' }}
+      fork_safe: true
 
   ci:
     name: ci
-    needs: runner-probe
-    if: always() && !cancelled()
+    needs: runner
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-ci.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
-      runner_json: >-
-        ${{ (
-          (
-            ((github.event_name == 'workflow_dispatch') && (inputs.runner == 'self-hosted')) ||
-            ((github.event_name == 'workflow_dispatch') && (inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')) ||
-            ((github.event_name != 'workflow_dispatch') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')) ||
-            (
-              (
-                ((github.event_name == 'workflow_dispatch') && (inputs.runner == 'auto')) ||
-                ((github.event_name == 'workflow_dispatch') && (inputs.runner == 'policy') && ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto'))) ||
-                ((github.event_name != 'workflow_dispatch') && ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto')))
-              ) &&
-              (needs.runner-probe.outputs.available != 'true')
-            )
-          ) &&
-          ((github.event_name != 'pull_request') || (github.event.pull_request.head.repo.full_name == github.repository))
-        ) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
+      runner_json: ${{ needs.runner.outputs.runner_json }}
       hygiene_enabled: true
       python_enabled: true
       python_versions_json: '["3.12","3.13","3.14"]'
