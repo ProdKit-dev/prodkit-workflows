@@ -124,16 +124,27 @@ def assert_runner_policy(text: str, *, name: str, fork_safe: bool) -> None:
         "workflow_dispatch:",
         "default: policy",
         "PRODKIT_RUNNER_MODE",
+        "- auto",
         "github-hosted",
         "self-hosted",
+        "runner-probe:",
+        "Hosted runner availability",
+        "runs-on: ubuntu-latest",
+        "needs: runner-probe",
+        "needs.runner-probe.result == 'failure'",
         '"ubuntu-latest"',
         "inputs.runner == 'policy'",
         "inputs.runner == 'self-hosted'",
+        "inputs.runner == 'auto'",
+        "vars.PRODKIT_RUNNER_MODE == 'auto'",
     ):
         if required not in text:
             raise SystemExit(f"runner policy missing from {name}: {required}")
-    if fork_safe and "github.event.pull_request.head.repo.full_name == github.repository" not in text:
-        raise SystemExit(f"fork safety missing from {name}")
+    if fork_safe:
+        if "github.event.pull_request.head.repo.full_name == github.repository" not in text:
+            raise SystemExit(f"fork safety missing from {name}")
+        if text.count("github.event.pull_request.head.repo.full_name == github.repository") < 2:
+            raise SystemExit(f"fork safety must guard both probe and self-hosted routing in {name}")
 
 
 def main() -> None:
@@ -172,7 +183,6 @@ def main() -> None:
             f"actual={sorted(template_adapters)} expected={sorted(EXPECTED_CONSUMER_ADAPTERS)}"
         )
 
-    # Bootstrap must materialize immutable refs, conditional runner policy, and the exact adapter catalog.
     with tempfile.TemporaryDirectory() as td:
         dest = pathlib.Path(td) / "consumer"
         dest.mkdir()
@@ -236,6 +246,7 @@ def main() -> None:
     reusable_org_audit = (ROOT / ".github/workflows/reusable-org-audit.yml").read_text()
     contracts = (ROOT / "docs/CONTRACTS.md").read_text()
     readme = (ROOT / "README.md").read_text()
+    runners = (ROOT / "docs/RUNNERS.md").read_text()
 
     for name, text in (
         ("CI", reusable_ci),
@@ -303,7 +314,6 @@ def main() -> None:
     if "group: release-metadata-${{ inputs.version }}" not in reusable_release_metadata:
         raise SystemExit("reusable Release Metadata version concurrency contract missing")
 
-    # The control-plane callers use the same conditional runner policy as generated consumers.
     for name in ("ci.yml", "security.yml", "release.yml", "org-audit.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
         assert_runner_policy(
@@ -322,7 +332,9 @@ def main() -> None:
         "Complete consumer adapter catalog",
         "Disabled capabilities do not require their adapter file to exist",
         "PRODKIT_RUNNER_MODE",
+        "Hosted-first failover contract",
         "fork-originated pull requests are always forced onto GitHub-hosted runners",
+        "genuine test",
         "at least one payload",
         "Release publication state machine",
         "Release metadata repair",
@@ -332,10 +344,24 @@ def main() -> None:
         if phrase not in contracts:
             raise SystemExit(f"CONTRACTS.md missing normative contract: {phrase}")
 
-    if "Conditional hosted/self-hosted policy" not in readme:
-        raise SystemExit("README runner policy is not conditional hosted/self-hosted")
-    if "Guarded release metadata repair" not in readme:
-        raise SystemExit("README release metadata repair contract is missing")
+    for phrase in (
+        "Hosted-first automatic runner failover",
+        "runner: auto",
+        "ci / CI Required",
+        "security / Security Required",
+    ):
+        if phrase not in readme:
+            raise SystemExit(f"README runner failover contract missing: {phrase}")
+
+    for phrase in (
+        "Automatic hosted-first failover",
+        "jobs that fail before step 1",
+        "genuine test",
+        "There is intentionally no automatic self-hosted-to-hosted failover",
+    ):
+        if phrase not in runners:
+            raise SystemExit(f"RUNNERS.md failover contract missing: {phrase}")
+
     if "default to `self-hosted" in readme:
         raise SystemExit("README still claims self-hosted is the default")
 
