@@ -19,9 +19,15 @@ python3 scripts/bootstrap_consumer.py \
 
 Edit the generated adapters and disable unused capabilities in caller workflows. If a repository does not have both `package.json` and `pyproject.toml`, remove the irrelevant version source from `.prodkit/release.json`.
 
-Generated callers are GitHub-hosted first and use `ubuntu-latest` for normal CI, Security, and Release execution. They also expose a `workflow_dispatch` runner choice so an operator can rerun the exact workflow/ref with `runner: self-hosted` during a hosted-runner quota/capacity incident. GitHub Actions has no native ordered runner fallback; see `docs/RUNNERS.md` before automating failover.
+Generated callers support both GitHub-hosted and self-hosted execution. Configure the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE` at organization or repository level:
 
-For public repositories, do not route fork-originated pull-request code to persistent self-hosted runners. For private repositories, keep the same fail-closed rule unless the runner is intentionally ephemeral and isolated for untrusted code.
+- `github-hosted` → automatic trusted events use `ubuntu-latest`;
+- `self-hosted` → automatic trusted events use `["self-hosted","Linux","X64"]`;
+- unset/unknown → GitHub-hosted fail-safe default.
+
+Repository-level configuration overrides organization-level configuration. Manual `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE` and explicit choices override it for that dispatch.
+
+Fork-originated pull requests are always routed to GitHub-hosted runners, even if the configured policy is self-hosted. GitHub Actions has no native ordered runner fallback; see `docs/RUNNERS.md` before automating quota/capacity failover.
 
 ## 4. Stabilize required status names
 
