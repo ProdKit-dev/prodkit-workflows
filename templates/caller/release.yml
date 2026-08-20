@@ -16,11 +16,12 @@ on:
         type: boolean
         default: false
       runner:
-        description: Runner target for manual failover
+        description: Runner override; policy uses PRODKIT_RUNNER_MODE
         required: true
         type: choice
-        default: github-hosted
+        default: policy
         options:
+          - policy
           - github-hosted
           - self-hosted
 
@@ -39,7 +40,7 @@ jobs:
       version: ${{ inputs.version }}
       target_sha: ${{ inputs.target_sha }}
       prerelease: ${{ inputs.prerelease }}
-      runner_json: ${{ inputs.runner == 'self-hosted' && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
+      runner_json: ${{ ((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
       python_enabled: true
       python_version: "3.12"
       uv_version: "0.10.0"
