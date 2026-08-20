@@ -74,7 +74,23 @@ def main() -> None:
             if required not in release:
                 raise SystemExit(f"bootstrap release toolchain contract missing: {required}")
 
+    reusable_ci = (ROOT / ".github/workflows/reusable-ci.yml").read_text()
+    reusable_security = (ROOT / ".github/workflows/reusable-security.yml").read_text()
     reusable_release = (ROOT / ".github/workflows/reusable-release.yml").read_text()
+
+    if "default: '\"ubuntu-latest\"'" not in reusable_ci:
+        raise SystemExit("reusable CI must default to GitHub-hosted")
+    if "default: '\"ubuntu-latest\"'" not in reusable_security:
+        raise SystemExit("reusable Security must default to GitHub-hosted")
+    for required in (
+        "gitleaks_config_path:",
+        "--report-format json",
+        "gitleaks-report.json",
+        "Preserve redacted Gitleaks evidence",
+    ):
+        if required not in reusable_security:
+            raise SystemExit(f"reusable Security diagnostics contract missing: {required}")
+
     for required in (
         "python_enabled:",
         "node_enabled:",
