@@ -21,7 +21,7 @@ Edit the generated adapters and disable unused capabilities in caller workflows.
 
 Generated callers support GitHub-hosted execution, trusted self-hosted execution, and hosted-first automatic failover. Configure the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE` at organization or repository level:
 
-- `auto` → probe `ubuntu-latest`; if that probe fails, route the real trusted workload to `["self-hosted","Linux","X64"]`;
+- `auto` → run a non-poisoning `ubuntu-latest` availability probe; if it does not emit `available=true`, route the real trusted workload to `["self-hosted","Linux","X64"]`;
 - `github-hosted` → strict `ubuntu-latest`;
 - `self-hosted` → strict `["self-hosted","Linux","X64"]`;
 - unset → same as `auto`;
@@ -29,7 +29,7 @@ Generated callers support GitHub-hosted execution, trusted self-hosted execution
 
 Repository-level configuration overrides organization-level configuration. Manual `workflow_dispatch` exposes `runner: policy | auto | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE` and explicit choices override it for that dispatch.
 
-Fork-originated pull requests are always routed to GitHub-hosted runners and never participate in self-hosted fallback. The hosted probe does not checkout or execute repository code. Failover is decided before the real reusable workflow begins, so a test/security/release failure never triggers retry on another runner. See `docs/RUNNERS.md` for the exact limitations, including indefinitely queued hosted jobs and the absence of automatic self-hosted-to-hosted fallback.
+Fork-originated pull requests are always routed to GitHub-hosted runners and never participate in self-hosted fallback. The hosted probe does not checkout or execute repository code, uses `continue-on-error: true`, and writes `available=true` only if its step actually runs. Its infrastructure failure is therefore routing evidence rather than a failed product gate. Failover is decided before the real reusable workflow begins, so a test/security/release failure never triggers retry on another runner. See `docs/RUNNERS.md` for the exact limitations, including indefinitely queued hosted jobs and the absence of automatic self-hosted-to-hosted fallback.
 
 ## 4. Stabilize required status names
 

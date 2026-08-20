@@ -12,7 +12,8 @@ All notable changes to this repository are documented here.
 - Add a versioned consumer release manifest contract and bootstrap generator.
 - Add importable organization main-branch and semantic release-tag rulesets that are disabled by default for safe incremental rollout.
 - Add standalone repository and organization drift validators.
-- Add hosted-first automatic runner failover: `PRODKIT_RUNNER_MODE=auto` (and unset policy) performs a repository-code-free `ubuntu-latest` availability probe and routes the unchanged reusable workflow to trusted self-hosted runners when that probe fails, while explicit hosted/self-hosted modes stay strict and fork PRs remain hosted-only.
+- Add hosted-first automatic runner failover: `PRODKIT_RUNNER_MODE=auto` (and unset policy) performs a repository-code-free, non-poisoning `ubuntu-latest` availability probe, emits `available=true` only when hosted execution actually starts, and routes the unchanged reusable workflow to trusted self-hosted runners when that positive output is absent. Explicit hosted/self-hosted modes stay strict and fork PRs remain hosted-only.
+- Ensure a hosted probe infrastructure/billing failure is routing evidence rather than a failed required gate; genuine CI/Security/Release failures remain terminal and never trigger runner switching.
 - Preserve stable `ci / CI Required` and `security / Security Required` identities across failover by keeping routing in the thin caller before reusable workflow execution.
 - Enforce adapter containment beneath `.prodkit/workflows/` instead of relying on string-prefix matching.
 - Enforce the complete release-manifest v1 shape at runtime, including required non-empty version sources and rejection of unknown fields.

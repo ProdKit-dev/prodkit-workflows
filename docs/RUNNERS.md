@@ -8,7 +8,7 @@ Generated callers read the non-secret GitHub Actions configuration variable `PRO
 
 | `PRODKIT_RUNNER_MODE` | Automatic trusted events |
 | --- | --- |
-| `auto` | probe GitHub-hosted first; fall back to `["self-hosted","Linux","X64"]` if the hosted probe fails |
+| `auto` | run a non-poisoning GitHub-hosted availability probe first; fall back to `["self-hosted","Linux","X64"]` when the probe does not emit `available=true` |
 | `github-hosted` | strict `ubuntu-latest`; no automatic self-hosted fallback |
 | `self-hosted` | strict `["self-hosted","Linux","X64"]` |
 | unset | same as `auto` |
@@ -20,10 +20,11 @@ For CI and Security pull requests, fork-originated code is always forced to GitH
 
 ## Automatic hosted-first failover
 
-`auto` is implemented by the thin caller, not by an invalid multi-runner `runs-on` expression. Before invoking the reusable workflow, the caller schedules a minimal `Hosted runner availability` probe on `ubuntu-latest`. The probe does not checkout or execute repository code.
+`auto` is implemented by the thin caller, not by an invalid multi-runner `runs-on` expression. Before invoking the reusable workflow, the caller schedules a minimal `Hosted runner availability` probe on `ubuntu-latest`. The probe does not checkout or execute repository code and is deliberately **non-poisoning**: its infrastructure failure is routing evidence, not a failed product/security/release gate.
 
-- If the probe succeeds, the real reusable workflow runs on GitHub-hosted Ubuntu.
-- If the probe terminates with failure before the real workflow starts, the caller invokes that same reusable workflow on `["self-hosted","Linux","X64"]`.
+- If the probe actually starts, its step writes `available=true` to a job output and the real reusable workflow runs on GitHub-hosted Ubuntu.
+- If GitHub cannot provision the hosted probe (including billing/account/startup failures such as jobs that fail before step 1), the output is absent and the caller invokes the same reusable workflow on `["self-hosted","Linux","X64"]`.
+- The probe uses `continue-on-error: true` so a hosted-infrastructure failure does not by itself poison the overall caller workflow result.
 - If the probe is skipped because an explicit runner mode was selected, the explicit mode is used unchanged.
 - If the workflow is cancelled, the real reusable workflow is not started.
 
@@ -46,7 +47,7 @@ Release is dispatch-only, so its default `runner: policy` applies the same selec
 
 GitHub Actions does not provide an `OR` or ordered-fallback form of `runs-on`. A `runs-on` array means that a runner must match **all** labels in the array; it does not mean “try GitHub-hosted, then self-hosted.” ProdKit therefore implements failover as a pre-workload probe plus conditional routing.
 
-This covers hosted-runner failures that GitHub resolves as a failed probe, including account/billing/startup failures like jobs that fail before step 1. It cannot bypass a complete GitHub Actions control-plane outage, because both hosted and self-hosted jobs still depend on GitHub for queueing and dispatch. A hosted job that remains indefinitely queued rather than reaching a terminal failure also cannot trigger in-workflow failover; operators may force `runner: self-hosted` or set `PRODKIT_RUNNER_MODE=self-hosted` for subsequent runs.
+This covers hosted-runner failures where the probe fails to produce its positive availability output, including account/billing/startup failures like jobs that fail before step 1. It cannot bypass a complete GitHub Actions control-plane outage, because both hosted and self-hosted jobs still depend on GitHub for queueing and dispatch. A hosted job that remains indefinitely queued rather than reaching a state from which dependent jobs can proceed also cannot trigger in-workflow failover; operators may force `runner: self-hosted` or set `PRODKIT_RUNNER_MODE=self-hosted` for subsequent runs.
 
 There is intentionally no automatic self-hosted-to-hosted failover. An unavailable self-hosted runner can remain queued without producing a failure event that the same workflow can safely react to. Use strict `github-hosted` or `auto` when self-hosted availability is uncertain.
 

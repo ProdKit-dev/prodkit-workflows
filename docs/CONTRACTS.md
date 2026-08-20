@@ -36,19 +36,22 @@ All reusable workflow families accept an explicit `runner_json` target and defau
 
 ### Hosted-first failover contract
 
-GitHub Actions does not provide ordered `runs-on` fallback. Therefore `auto` is implemented by the thin caller using a pre-workload probe:
+GitHub Actions does not provide ordered `runs-on` fallback. Therefore `auto` is implemented by the thin caller using a **non-poisoning** pre-workload probe:
 
 1. schedule a minimal `Hosted runner availability` job on `ubuntu-latest` without checking out or executing repository code;
-2. if the probe succeeds, invoke the unchanged reusable workflow with `runner_json='"ubuntu-latest"'`;
-3. if the probe reaches terminal `failure`, invoke that same reusable workflow with `runner_json='["self-hosted","Linux","X64"]'`;
-4. if the probe is skipped because the operator selected a strict runner mode, route directly to that strict target;
-5. if the workflow is cancelled, do not start the reusable workload.
+2. the probe uses `continue-on-error: true` and emits the job output `available=true` only if its step actually starts and completes;
+3. when that positive output exists, invoke the unchanged reusable workflow with `runner_json='"ubuntu-latest"'`;
+4. when auto policy is active but the positive output is absent, invoke that same reusable workflow with `runner_json='["self-hosted","Linux","X64"]'`;
+5. if the probe is skipped because the operator selected a strict runner mode, route directly to that strict target;
+6. if the workflow is cancelled, do not start the reusable workload.
+
+The probe's infrastructure failure must not itself make the final CI/Security/Release result fail when the trusted fallback workload succeeds. Its only purpose is to select the execution plane.
 
 Failover is therefore decided before product validation or release work begins. A real CI test failure, security finding, migration failure, build failure, release-check failure, or publication failure must remain terminal and must not cause automatic execution on another runner.
 
 The caller job names remain `ci`, `security`, `release`, and `audit`. Stable branch-protection identities such as `ci / CI Required` and `security / Security Required` must not change merely because failover is enabled.
 
-The automatic mechanism covers hosted failures that GitHub resolves as a failed probe, including billing/account/startup failures that terminate before step 1. It cannot bypass a complete Actions control-plane outage and cannot react to a hosted job that remains indefinitely queued without entering a terminal state. There is intentionally no automatic self-hosted-to-hosted fallback because an unavailable self-hosted runner can remain queued without producing a safe in-workflow failure signal.
+The automatic mechanism covers hosted failures where the probe cannot produce its positive availability output, including billing/account/startup failures that terminate before step 1. It cannot bypass a complete Actions control-plane outage and cannot react to a hosted job that remains indefinitely queued without allowing dependent jobs to continue. There is intentionally no automatic self-hosted-to-hosted fallback because an unavailable self-hosted runner can remain queued without producing a safe in-workflow failure signal.
 
 A self-hosted runner still depends on the GitHub Actions control plane for queueing and dispatch and therefore cannot bypass a complete Actions service outage.
 

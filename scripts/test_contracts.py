@@ -130,8 +130,11 @@ def assert_runner_policy(text: str, *, name: str, fork_safe: bool) -> None:
         "runner-probe:",
         "Hosted runner availability",
         "runs-on: ubuntu-latest",
+        "continue-on-error: true",
+        "available: ${{ steps.probe.outputs.available }}",
+        "id: probe",
         "needs: runner-probe",
-        "needs.runner-probe.result == 'failure'",
+        "needs.runner-probe.outputs.available != 'true'",
         '"ubuntu-latest"',
         "inputs.runner == 'policy'",
         "inputs.runner == 'self-hosted'",
@@ -140,6 +143,8 @@ def assert_runner_policy(text: str, *, name: str, fork_safe: bool) -> None:
     ):
         if required not in text:
             raise SystemExit(f"runner policy missing from {name}: {required}")
+    if "needs.runner-probe.result == 'failure'" in text:
+        raise SystemExit(f"runner policy in {name} still routes from a poisoning failed job")
     if fork_safe:
         if "github.event.pull_request.head.repo.full_name == github.repository" not in text:
             raise SystemExit(f"fork safety missing from {name}")
@@ -335,6 +340,7 @@ def main() -> None:
         "Hosted-first failover contract",
         "fork-originated pull requests are always forced onto GitHub-hosted runners",
         "real CI test failure",
+        "non-poisoning",
         "at least one payload",
         "Release publication state machine",
         "Release metadata repair",
@@ -346,6 +352,7 @@ def main() -> None:
 
     for phrase in (
         "Hosted-first automatic runner failover",
+        "non-poisoning",
         "runner: auto",
         "ci / CI Required",
         "security / Security Required",
@@ -355,6 +362,7 @@ def main() -> None:
 
     for phrase in (
         "Automatic hosted-first failover",
+        "non-poisoning",
         "jobs that fail before step 1",
         "genuine test",
         "There is intentionally no automatic self-hosted-to-hosted failover",
