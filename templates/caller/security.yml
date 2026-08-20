@@ -4,6 +4,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner target for manual failover
+        required: true
+        type: choice
+        default: github-hosted
+        options:
+          - github-hosted
+          - self-hosted
   schedule:
     - cron: "37 4 * * 1"
 
@@ -15,7 +25,7 @@ jobs:
     name: security
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-security.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
-      runner_json: '["self-hosted","linux","x64"]'
+      runner_json: ${{ (github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted') && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
       secret_scan_enabled: true
       sbom_enabled: true
       python_enabled: true
