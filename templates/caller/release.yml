@@ -32,4 +32,10 @@ jobs:
       target_sha: ${{ inputs.target_sha }}
       prerelease: ${{ inputs.prerelease }}
       runner_json: '["self-hosted","linux","x64"]'
+      python_enabled: true
+      python_version: "3.12"
+      uv_version: "0.10.0"
+      node_enabled: true
+      node_version: "24"
+      pnpm_version: "11.21.0"
       environment: release
