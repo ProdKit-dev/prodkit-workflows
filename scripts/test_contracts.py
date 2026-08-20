@@ -51,6 +51,12 @@ def main() -> None:
                     raise SystemExit(
                         f"bootstrap hosted-first runner contract missing from {name}: {required}"
                     )
+
+        for name in ("ci.yml", "security.yml"):
+            text = (dest / ".github/workflows" / name).read_text()
+            if "concurrency:" not in text or "cancel-in-progress: true" not in text:
+                raise SystemExit(f"bootstrap caller concurrency contract missing: {name}")
+
         if not (dest / ".prodkit/release.json").is_file():
             raise SystemExit("bootstrap manifest missing")
         if len(list((dest / ".prodkit/workflows").glob("*.sh"))) < 10:
@@ -79,6 +85,14 @@ def main() -> None:
         if required not in reusable_release:
             raise SystemExit(f"reusable release toolchain contract missing: {required}")
 
+    # CI/Security concurrency belongs to the caller so two independent calls to
+    # the same reusable workflow can coexist in one workflow run (for example a
+    # hosted/self-hosted portability canary). Release keeps its own version lock.
+    for name in ("reusable-ci.yml", "reusable-security.yml"):
+        text = (ROOT / ".github/workflows" / name).read_text()
+        if "\nconcurrency:\n" in text:
+            raise SystemExit(f"reusable workflow must not own caller concurrency: {name}")
+
     # This public repository must not automatically send PR code to a persistent
     # self-hosted runner. Automatic CI/Security use GitHub-hosted runners and the
     # self-hosted target is available only through explicit workflow_dispatch.
@@ -88,6 +102,8 @@ def main() -> None:
             raise SystemExit(f"self caller is not hosted-first: {name}")
         if "inputs.runner == 'self-hosted'" not in text:
             raise SystemExit(f"self-hosted failover selector missing: {name}")
+        if "concurrency:" not in text or "cancel-in-progress: true" not in text:
+            raise SystemExit(f"self caller concurrency contract missing: {name}")
 
     print("contract tests passed")
 
