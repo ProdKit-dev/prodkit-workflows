@@ -4,6 +4,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner target for manual failover
+        required: true
+        type: choice
+        default: github-hosted
+        options:
+          - github-hosted
+          - self-hosted
 
 permissions:
   contents: read
@@ -13,7 +23,7 @@ jobs:
     name: ci
     uses: ./.github/workflows/reusable-ci.yml
     with:
-      runner_json: '["self-hosted","linux","x64"]'
+      runner_json: ${{ (github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted') && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
       hygiene_enabled: true
       python_enabled: false
       node_enabled: false
