@@ -7,11 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Runner target for manual failover
+        description: Runner override; policy uses PRODKIT_RUNNER_MODE
         required: true
         type: choice
-        default: github-hosted
+        default: policy
         options:
+          - policy
           - github-hosted
           - self-hosted
 
@@ -27,7 +28,9 @@ jobs:
     name: ci
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-ci.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
-      runner_json: ${{ (github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted') && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
+      # Automatic events follow vars.PRODKIT_RUNNER_MODE. Manual dispatch may override it.
+      # Fork-originated pull requests are always forced onto GitHub-hosted runners.
+      runner_json: ${{ ((((github.event_name == 'workflow_dispatch') && ((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')))) || ((github.event_name != 'workflow_dispatch') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) && ((github.event_name != 'pull_request') || (github.event.pull_request.head.repo.full_name == github.repository))) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
       hygiene_enabled: true
       python_enabled: true
       python_versions_json: '["3.12","3.13","3.14"]'
