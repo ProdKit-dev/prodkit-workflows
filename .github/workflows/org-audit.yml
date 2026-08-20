@@ -24,6 +24,7 @@ on:
         default: policy
         options:
           - policy
+          - auto
           - github-hosted
           - self-hosted
 
@@ -31,13 +32,31 @@ permissions:
   contents: read
 
 jobs:
+  runner-probe:
+    name: Hosted runner availability
+    if: >-
+      (inputs.runner == 'auto') ||
+      ((inputs.runner == 'policy') &&
+       ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Confirm GitHub-hosted runner availability
+        run: echo "GitHub-hosted runner is available"
+
   audit:
+    needs: runner-probe
+    if: >-
+      always() && !cancelled() &&
+      (needs.runner-probe.result == 'success' ||
+       needs.runner-probe.result == 'failure' ||
+       needs.runner-probe.result == 'skipped')
     uses: ./.github/workflows/reusable-org-audit.yml
     with:
       organization: ${{ inputs.organization }}
       workflows_repository: ProdKit-dev/prodkit-workflows
       required_sha: ${{ inputs.required_sha }}
       repository_prefix: ${{ inputs.repository_prefix }}
-      runner_json: ${{ ((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
+      runner_json: ${{ (((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) || (needs.runner-probe.result == 'failure')) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
     secrets:
       org_audit_token: ${{ secrets.ORG_AUDIT_TOKEN }}
