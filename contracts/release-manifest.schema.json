@@ -65,10 +65,12 @@
         },
         "changelog_path": {
           "type": "string",
+          "minLength": 1,
           "default": "CHANGELOG.md"
         },
         "changelog_heading_template": {
           "type": "string",
+          "minLength": 1,
           "default": "## [{version}]"
         }
       }
@@ -101,6 +103,7 @@
       "properties": {
         "name_template": {
           "type": "string",
+          "minLength": 1,
           "default": "{repository} {tag}"
         }
       }
