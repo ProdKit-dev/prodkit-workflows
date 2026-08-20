@@ -16,9 +16,10 @@ on:
         type: boolean
         default: false
       runner_json:
+        description: JSON value accepted by runs-on. Defaults to GitHub-hosted Ubuntu; callers may explicitly select trusted self-hosted labels.
         required: false
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '"ubuntu-latest"'
       main_branch:
         required: false
         type: string
@@ -129,6 +130,8 @@ jobs:
           required=json.loads(os.environ['REQUIRED_WORKFLOWS_JSON'])
           if not isinstance(required,list) or not required or not all(isinstance(x,str) and x for x in required):
               raise SystemExit('required_workflows_json must be a non-empty JSON string array')
+          if len(set(required)) != len(required):
+              raise SystemExit('required_workflows_json must not contain duplicate workflow names')
           req=urllib.request.Request(
               f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
               headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'prodkit-workflows-release'})
@@ -148,45 +151,93 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import json, os, pathlib, tomllib
-          root=pathlib.Path.cwd().resolve(); mp=(root/os.environ['MANIFEST_PATH']).resolve()
-          if root not in mp.parents: raise SystemExit('manifest escapes repository')
+          root=pathlib.Path.cwd().resolve()
+          raw_manifest=root/pathlib.Path(os.environ['MANIFEST_PATH'])
+          if raw_manifest.is_absolute() and pathlib.Path(os.environ['MANIFEST_PATH']).is_absolute():
+              raise SystemExit('manifest path must be repository-relative')
+          if raw_manifest.is_symlink(): raise SystemExit('manifest must not be a symlink')
+          mp=raw_manifest.resolve()
+          if mp == root or root not in mp.parents: raise SystemExit('manifest escapes repository')
+          if not mp.is_file(): raise SystemExit('release manifest missing')
           data=json.loads(mp.read_text())
-          if data.get('schema_version') != 1: raise SystemExit('unsupported release manifest schema')
-          version=os.environ['RELEASE_VERSION']
-          def inside(path):
-              p=(root/path).resolve()
-              if root not in p.parents and p != root: raise SystemExit(f'path escapes repository: {path}')
+
+          def require_obj(value,name):
+              if not isinstance(value,dict): raise SystemExit(f'{name} must be an object')
+              return value
+          def reject_unknown(value,allowed,name):
+              unknown=sorted(set(value)-set(allowed))
+              if unknown: raise SystemExit(f'unknown {name} keys: {", ".join(unknown)}')
+          def nonempty(value,name):
+              if not isinstance(value,str) or not value: raise SystemExit(f'{name} must be a non-empty string')
+              return value
+          def inside(path, *, allow_root=False):
+              raw=pathlib.Path(path)
+              if raw.is_absolute(): raise SystemExit(f'absolute path is not allowed: {path}')
+              p=(root/raw).resolve()
+              if p == root and not allow_root: raise SystemExit(f'path resolves to repository root: {path}')
+              if p != root and root not in p.parents: raise SystemExit(f'path escapes repository: {path}')
               return p
           def dotted(obj, selector):
-              for part in selector.split('.'):
-                  obj=obj[part]
+              for part in selector.split('.'): obj=obj[part]
               return obj
-          for src in data.get('version',{}).get('sources',[]):
-              typ=src.get('type'); path=src.get('path'); selector=src.get('selector')
-              if not path: raise SystemExit('version source missing path')
+
+          manifest=require_obj(data,'release manifest')
+          reject_unknown(manifest,{'schema_version','version','notes','build','release'},'release manifest')
+          missing={'schema_version','version','notes','build'}-set(manifest)
+          if missing: raise SystemExit('missing release manifest keys: '+', '.join(sorted(missing)))
+          if manifest['schema_version'] != 1: raise SystemExit('unsupported release manifest schema')
+
+          version_block=require_obj(manifest['version'],'version')
+          reject_unknown(version_block,{'sources'},'version')
+          sources=version_block.get('sources')
+          if not isinstance(sources,list) or not sources: raise SystemExit('at least one version source required')
+          version=os.environ['RELEASE_VERSION']
+          for index,src_value in enumerate(sources):
+              src=require_obj(src_value,f'version.sources[{index}]')
+              reject_unknown(src,{'type','path','selector'},f'version.sources[{index}]')
+              missing_source={'type','path'}-set(src)
+              if missing_source: raise SystemExit(f'version.sources[{index}] missing keys: '+', '.join(sorted(missing_source)))
+              typ=src['type']; path=nonempty(src['path'],f'version.sources[{index}].path'); selector=src.get('selector')
+              if typ not in {'text','json','toml'}: raise SystemExit(f'unsupported version source: {typ}')
+              if selector is not None: nonempty(selector,f'version.sources[{index}].selector')
               p=inside(path)
+              if not p.is_file(): raise SystemExit(f'version source missing: {path}')
               if typ=='text': actual=p.read_text().strip()
               elif typ=='json': actual=dotted(json.loads(p.read_text()), selector or 'version')
-              elif typ=='toml': actual=dotted(tomllib.loads(p.read_text()), selector or 'project.version')
-              else: raise SystemExit(f'unsupported version source: {typ}')
+              else: actual=dotted(tomllib.loads(p.read_text()), selector or 'project.version')
               if str(actual) != version: raise SystemExit(f'version mismatch in {path}: {actual} != {version}')
-          notes=data.get('notes',{}); template=notes.get('path_template')
-          if not template: raise SystemExit('notes.path_template required')
+
+          notes=require_obj(manifest['notes'],'notes')
+          reject_unknown(notes,{'path_template','changelog_path','changelog_heading_template'},'notes')
+          template=nonempty(notes.get('path_template'),'notes.path_template')
+          changelog=notes.get('changelog_path','CHANGELOG.md'); nonempty(changelog,'notes.changelog_path')
+          heading_template=notes.get('changelog_heading_template','## [{version}]'); nonempty(heading_template,'notes.changelog_heading_template')
           notes_path=template.format(version=version,tag='v'+version)
           p=inside(notes_path)
           if not p.is_file(): raise SystemExit(f'missing release notes: {notes_path}')
-          changelog=notes.get('changelog_path','CHANGELOG.md'); heading=notes.get('changelog_heading_template','## [{version}]').format(version=version,tag='v'+version)
           cp=inside(changelog)
+          if not cp.is_file(): raise SystemExit(f'missing changelog: {changelog}')
+          heading=heading_template.format(version=version,tag='v'+version)
           if heading not in cp.read_text(): raise SystemExit(f'changelog missing heading: {heading}')
-          build=data.get('build',{}); script=build.get('script'); artifact_dir=build.get('artifact_dir')
-          if not script or not artifact_dir: raise SystemExit('build.script and build.artifact_dir required')
-          sp=inside(script); ad=inside(artifact_dir)
-          if not sp.is_file() or sp.is_symlink(): raise SystemExit('release build script missing or symlinked')
-          name_template=data.get('release',{}).get('name_template','{repository} {tag}')
+
+          build=require_obj(manifest['build'],'build')
+          reject_unknown(build,{'script','artifact_dir','source_archive'},'build')
+          script=nonempty(build.get('script'),'build.script'); artifact_dir=nonempty(build.get('artifact_dir'),'build.artifact_dir')
+          source_archive=build.get('source_archive',True)
+          if not isinstance(source_archive,bool): raise SystemExit('build.source_archive must be a boolean')
+          raw_script=root/pathlib.Path(script)
+          if raw_script.is_symlink(): raise SystemExit('release build script must not be a symlink')
+          sp=inside(script); inside(artifact_dir)
+          if not sp.is_file(): raise SystemExit('release build script missing')
+
+          release=manifest.get('release',{})
+          release=require_obj(release,'release')
+          reject_unknown(release,{'name_template'},'release')
+          name_template=release.get('name_template','{repository} {tag}'); nonempty(name_template,'release.name_template')
           repo=os.environ['GITHUB_REPOSITORY'].split('/',1)[-1]
           outputs={
               'notes_path':notes_path,'build_script':script,'artifact_dir':artifact_dir,
-              'source_archive':'true' if build.get('source_archive',True) else 'false',
+              'source_archive':'true' if source_archive else 'false',
               'release_name':name_template.format(repository=repo,version=version,tag='v'+version)
           }
           with open(os.environ['GITHUB_OUTPUT'],'a') as out:
@@ -282,6 +333,33 @@ jobs:
           set -euo pipefail
           bash "$BUILD_SCRIPT"
 
+      - name: Validate consumer release payload contract
+        if: steps.preflight.outputs.published != 'true'
+        env:
+          ARTIFACT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib
+          root=pathlib.Path.cwd().resolve(); d=pathlib.Path(os.environ['ARTIFACT_DIR']).resolve()
+          if d == root or root not in d.parents: raise SystemExit('artifact dir escapes repository')
+          if not d.is_dir(): raise SystemExit('release artifact directory missing')
+          repo=os.environ['GITHUB_REPOSITORY'].split('/',1)[-1]
+          reserved={
+              'SHA256SUMS',
+              'release-metadata.json',
+              'repository.spdx.json',
+              f"{repo}-{os.environ['RELEASE_TAG']}.tar.gz",
+          }
+          entries=list(d.iterdir())
+          if not entries: raise SystemExit('consumer release payload set is empty')
+          for p in entries:
+              if p.name in reserved: raise SystemExit(f'consumer emitted central-owned artifact: {p.name}')
+              if p.is_symlink() or not p.is_file(): raise SystemExit(f'consumer release payload must be a flat regular file: {p.name}')
+          print(f'consumer release payload contract satisfied: {len(entries)} file(s)')
+          PY
+
       - name: Add exact source archive
         if: steps.preflight.outputs.published != 'true' && steps.manifest.outputs.source_archive == 'true'
         env:
@@ -313,7 +391,7 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, os, pathlib
           d=pathlib.Path(os.environ['ARTIFACT_DIR']).resolve(); root=pathlib.Path.cwd().resolve()
-          if root not in d.parents: raise SystemExit('artifact dir escapes repository')
+          if d == root or root not in d.parents: raise SystemExit('artifact dir escapes repository')
           items=[]
           for p in sorted(d.iterdir()):
               if p.name in {'SHA256SUMS','release-metadata.json'}: continue
