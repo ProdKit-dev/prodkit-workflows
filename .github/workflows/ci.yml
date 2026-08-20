@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    uses: ./.github/workflows/reusable-ci.yml
+    with:
+      runner_json: '["self-hosted","linux","x64"]'
+      hygiene_enabled: true
+      python_enabled: false
+      node_enabled: false
+      postgres_enabled: false
+      container_enabled: false
+      custom_enabled: true
+      custom_script: .prodkit/workflows/ci-custom.sh

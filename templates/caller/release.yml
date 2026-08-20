@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without v prefix
+        required: true
+        type: string
+      target_sha:
+        description: Exact current main SHA with successful permanent CI and Security
+        required: true
+        type: string
+      prerelease:
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  release:
+    name: release
+    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+    with:
+      version: ${{ inputs.version }}
+      target_sha: ${{ inputs.target_sha }}
+      prerelease: ${{ inputs.prerelease }}
+      runner_json: '["self-hosted","linux","x64"]'
+      environment: release

@@ -1,0 +1,231 @@
+name: Reusable Security
+
+on:
+  workflow_call:
+    inputs:
+      runner_json:
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64"]'
+      secret_scan_enabled:
+        required: false
+        type: boolean
+        default: true
+      gitleaks_image:
+        required: false
+        type: string
+        default: ghcr.io/gitleaks/gitleaks:v8.30.1
+      sbom_enabled:
+        required: false
+        type: boolean
+        default: true
+      syft_image:
+        required: false
+        type: string
+        default: anchore/syft:v1.42.3
+      python_enabled:
+        required: false
+        type: boolean
+        default: false
+      python_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-python.sh
+      node_enabled:
+        required: false
+        type: boolean
+        default: false
+      node_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-node.sh
+      container_enabled:
+        required: false
+        type: boolean
+        default: false
+      container_build_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-container-build.sh
+      custom_enabled:
+        required: false
+        type: boolean
+        default: false
+      custom_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-custom.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Secret scan
+    if: inputs.secret_scan_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Gitleaks full-history scan
+        env:
+          GITLEAKS_IMAGE: ${{ inputs.gitleaks_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/repo:ro" "$GITLEAKS_IMAGE" \
+            git /repo --redact --no-banner --exit-code 1 --log-opts="--remotes=origin --tags HEAD"
+
+  python:
+    name: Python dependency audit
+    if: inputs.python_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with: {version: "0.10.0", enable-cache: true}
+      - name: Run Python security contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  node:
+    name: Node dependency audit
+    if: inputs.node_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: {node-version: "24"}
+      - name: Run Node security contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  container:
+    name: Container vulnerability scan
+    if: inputs.container_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Build security image contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.container_build_script }}
+          PRODKIT_SECURITY_IMAGE: prodkit-security:${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+          docker image inspect "$PRODKIT_SECURITY_IMAGE" >/dev/null
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: prodkit-security:${{ github.sha }}
+          format: json
+          output: trivy-results.json
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          cache: "false"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: trivy-${{ github.sha }}
+          path: trivy-results.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Clean image
+        if: always()
+        run: docker image rm -f "prodkit-security:${GITHUB_SHA}" >/dev/null 2>&1 || true
+
+  sbom:
+    name: Source SBOM
+    if: inputs.sbom_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Generate SPDX 2.3 SBOM
+        env:
+          SYFT_IMAGE: ${{ inputs.syft_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/repo:ro" "$SYFT_IMAGE" dir:/repo -o spdx-json > repository.spdx.json
+          test -s repository.spdx.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('repository.spdx.json'))
+          if p.get('spdxVersion') != 'SPDX-2.3': raise SystemExit('expected SPDX-2.3')
+          if not isinstance(p.get('packages'), list): raise SystemExit('SBOM packages missing')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ github.sha }}
+          path: repository.spdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  custom:
+    name: Custom security
+    if: inputs.custom_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Run custom security contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.custom_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  required:
+    name: Security Required
+    if: always()
+    needs: [secrets, python, node, container, sbom, custom]
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify security jobs
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs=json.loads(os.environ['RESULTS'])
+          bad={k:v.get('result') for k,v in needs.items() if v.get('result') not in {'success','skipped'}}
+          if bad: raise SystemExit(f"Security jobs failed: {bad}")
+          print('Security contract satisfied')
+          PY

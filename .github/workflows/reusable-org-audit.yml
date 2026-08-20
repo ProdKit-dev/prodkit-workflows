@@ -1,0 +1,46 @@
+name: Reusable Organization Audit
+
+on:
+  workflow_call:
+    inputs:
+      organization:
+        required: true
+        type: string
+      workflows_repository:
+        required: true
+        type: string
+      required_sha:
+        required: true
+        type: string
+      repository_prefix:
+        required: false
+        type: string
+        default: ""
+      runner_json:
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64"]'
+    secrets:
+      org_audit_token:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Organization workflow audit
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - name: Audit organization consumers
+        env:
+          GITHUB_TOKEN: ${{ secrets.org_audit_token }}
+        run: >-
+          python3 scripts/audit_org.py
+          --org "${{ inputs.organization }}"
+          --workflows-repository "${{ inputs.workflows_repository }}"
+          --required-sha "${{ inputs.required_sha }}"
+          --repository-prefix "${{ inputs.repository_prefix }}"

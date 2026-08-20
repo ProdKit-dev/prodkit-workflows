@@ -1,0 +1,38 @@
+{
+  "name": "ProdKit immutable semantic release tags",
+  "target": "tag",
+  "source_type": "Organization",
+  "enforcement": "active",
+  "conditions": {
+    "repository_name": {
+      "exclude": [],
+      "include": [
+        "~ALL"
+      ]
+    },
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "~ALL"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "tag_name_pattern",
+      "parameters": {
+        "name": "Require v-prefixed semantic version tags",
+        "negate": false,
+        "pattern": "^v(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+        "operator": "regex"
+      }
+    }
+  ],
+  "bypass_actors": []
+}

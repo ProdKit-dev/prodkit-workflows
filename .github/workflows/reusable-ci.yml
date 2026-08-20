@@ -1,0 +1,267 @@
+name: Reusable CI
+
+on:
+  workflow_call:
+    inputs:
+      runner_json:
+        description: JSON array accepted by runs-on.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64"]'
+      hygiene_enabled:
+        required: false
+        type: boolean
+        default: true
+      hygiene_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-hygiene.sh
+      python_enabled:
+        required: false
+        type: boolean
+        default: false
+      python_versions_json:
+        required: false
+        type: string
+        default: '["3.12","3.13","3.14"]'
+      python_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-python.sh
+      node_enabled:
+        required: false
+        type: boolean
+        default: false
+      node_versions_json:
+        required: false
+        type: string
+        default: '["20","22","24"]'
+      node_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-node.sh
+      postgres_enabled:
+        required: false
+        type: boolean
+        default: false
+      postgres_image:
+        required: false
+        type: string
+        default: postgres:18-alpine
+      postgres_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-postgres.sh
+      container_enabled:
+        required: false
+        type: boolean
+        default: false
+      container_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-container.sh
+      custom_enabled:
+        required: false
+        type: boolean
+        default: false
+      custom_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-custom.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Hygiene
+    if: inputs.hygiene_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run hygiene contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.hygiene_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path" >&2; exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  python:
+    name: Python ${{ matrix.python }}
+    if: inputs.python_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(inputs.python_versions_json) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.10.0"
+          enable-cache: true
+      - run: uv python install "${{ matrix.python }}"
+      - name: Run Python contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+          PRODKIT_PYTHON_VERSION: ${{ matrix.python }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  node:
+    name: Node ${{ matrix.node }}
+    if: inputs.node_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ fromJSON(inputs.node_versions_json) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Run Node contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+          PRODKIT_NODE_VERSION: ${{ matrix.node }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  postgres:
+    name: PostgreSQL
+    if: inputs.postgres_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Start isolated PostgreSQL
+        id: postgres
+        env:
+          POSTGRES_IMAGE: ${{ inputs.postgres_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="prodkit-ci-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker rm -f "$name" >/dev/null 2>&1 || true
+          docker run -d --name "$name" \
+            -e POSTGRES_DB=prodkit_ci -e POSTGRES_USER=prodkit -e POSTGRES_PASSWORD=prodkit \
+            -p 127.0.0.1::5432 "$POSTGRES_IMAGE" >/dev/null
+          for _ in $(seq 1 45); do
+            if docker exec "$name" pg_isready -U prodkit -d prodkit_ci >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec "$name" pg_isready -U prodkit -d prodkit_ci >/dev/null
+          port="$(docker port "$name" 5432/tcp | awk -F: 'END{print $NF}')"
+          test -n "$port"
+          echo "container=$name" >> "$GITHUB_OUTPUT"
+          echo "port=$port" >> "$GITHUB_OUTPUT"
+      - name: Run PostgreSQL contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.postgres_script }}
+          PRODKIT_POSTGRES_HOST: 127.0.0.1
+          PRODKIT_POSTGRES_PORT: ${{ steps.postgres.outputs.port }}
+          PRODKIT_POSTGRES_DATABASE: prodkit_ci
+          PRODKIT_POSTGRES_USER: prodkit
+          PRODKIT_POSTGRES_PASSWORD: prodkit
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+      - name: Stop PostgreSQL
+        if: always()
+        env:
+          CONTAINER: ${{ steps.postgres.outputs.container }}
+        run: if [ -n "$CONTAINER" ]; then docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; fi
+
+  container:
+    name: Container
+    if: inputs.container_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run container contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.container_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  custom:
+    name: Custom
+    if: inputs.custom_enabled
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run custom contract
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.custom_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) exit 1 ;; esac
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+  required:
+    name: CI Required
+    if: always()
+    needs: [hygiene, python, node, postgres, container, custom]
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify required jobs
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs=json.loads(os.environ['RESULTS'])
+          bad={k:v.get('result') for k,v in needs.items() if v.get('result') not in {'success','skipped'}}
+          if bad: raise SystemExit(f"CI jobs failed: {bad}")
+          print('CI contract satisfied')
+          PY

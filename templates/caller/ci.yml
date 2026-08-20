@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-ci.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+    with:
+      runner_json: '["self-hosted","linux","x64"]'
+      hygiene_enabled: true
+      python_enabled: true
+      python_versions_json: '["3.12","3.13","3.14"]'
+      node_enabled: true
+      node_versions_json: '["20","22","24"]'
+      postgres_enabled: false
+      container_enabled: false
+      custom_enabled: false

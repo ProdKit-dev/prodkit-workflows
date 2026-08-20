@@ -1,0 +1,33 @@
+name: Organization Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      organization:
+        description: GitHub organization to audit
+        required: true
+        default: ProdKit-dev
+        type: string
+      required_sha:
+        description: Exact prodkit-workflows SHA consumers must pin
+        required: true
+        type: string
+      repository_prefix:
+        description: Optional repository name prefix
+        required: false
+        default: prodkit-
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    uses: ./.github/workflows/reusable-org-audit.yml
+    with:
+      organization: ${{ inputs.organization }}
+      workflows_repository: ProdKit-dev/prodkit-workflows
+      required_sha: ${{ inputs.required_sha }}
+      repository_prefix: ${{ inputs.repository_prefix }}
+    secrets:
+      org_audit_token: ${{ secrets.ORG_AUDIT_TOKEN }}
