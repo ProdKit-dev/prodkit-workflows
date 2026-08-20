@@ -9,11 +9,21 @@ It replaces copied repository-specific release state machines with immutable, re
 - **One release state machine.** A production release is requested manually with a semantic version and an exact `main` SHA. The release workflow proves that SHA, checks permanent CI/Security evidence, builds from it, attests it, creates an immutable tag, publishes through a draft-first transaction, and independently verifies published assets.
 - **Repository specialization without policy drift.** Consumers implement narrow `.prodkit/workflows/*.sh` adapters. The central workflows own orchestration, permissions, toolchain installation, isolation, final required gates, and release integrity.
 - **Immutable reuse.** Consumer caller workflows are generated with a full 40-character `prodkit-workflows` commit SHA. Floating `main`, `v0`, or branch references are intentionally rejected by the bootstrap/audit tooling.
-- **Self-hosted-safe.** PostgreSQL uses a run-scoped container and random localhost port. Security jobs clean release-owned Docker state. Workflows accept a JSON runner label array and default to `self-hosted, linux, x64`.
+- **Hosted-first with explicit failover.** Generated CI, Security, and Release callers normally use GitHub-hosted Ubuntu. Trusted operators can explicitly redispatch the same source on `["self-hosted","Linux","X64"]`; GitHub Actions does not provide ordered automatic runner fallback.
 - **Fail closed.** Missing evidence, version drift, tag movement, path escapes, symlinked release payloads, empty artifact sets, incomplete drafts, or published checksum mismatches stop publication.
 - **Workflow syntax is a release gate.** The control-plane repository runs pinned `rhysd/actionlint:1.7.12` in its hygiene contract; malformed or semantically invalid Actions YAML cannot become a trusted central revision.
 
 ## Repository surface
+
+There are three distinct workflow-related layers; their file counts intentionally differ.
+
+| Surface | Role | Count |
+| --- | --- | ---: |
+| `.github/workflows/` | Four top-level workflows plus four reusable `workflow_call` implementations | 8 |
+| `templates/consumer/.prodkit/workflows/` | Complete generated consumer adapter catalog | 11 |
+| `.prodkit/workflows/` | Only adapters enabled by this control-plane repository itself | 4 |
+
+The four operator-facing workflows are `CI`, `Security`, `Release`, and `Organization Audit`. Their reusable implementations are `reusable-ci.yml`, `reusable-security.yml`, `reusable-release.yml`, and `reusable-org-audit.yml`.
 
 | Capability | Reusable workflow | Stable required gate |
 | --- | --- | --- |
@@ -27,7 +37,10 @@ It replaces copied repository-specific release state machines with immutable, re
 After pushing this repository, obtain the commit SHA you want every consumer to trust. Then generate a consumer integration:
 
 ```bash
-python3 scripts/bootstrap_consumer.py   --workflows-repository ProdKit-dev/prodkit-workflows   --workflows-sha <40-character-commit-sha>   --destination ../prodkit-quality
+python3 scripts/bootstrap_consumer.py \
+  --workflows-repository ProdKit-dev/prodkit-workflows \
+  --workflows-sha <40-character-commit-sha> \
+  --destination ../prodkit-quality
 ```
 
 The generated files are deliberately thin:
@@ -53,7 +66,7 @@ The generated files are deliberately thin:
     release-build.sh
 ```
 
-Enable only the capabilities a repository actually needs. See `docs/ADOPTION.md` and `docs/CONTRACTS.md`.
+That is the complete adapter catalog. A consumer enables only the capabilities it needs. Disabled capabilities do not require their adapter file at runtime; enabled capabilities must point to a real non-symlink file beneath `.prodkit/workflows/`. See `docs/ADOPTION.md` and `docs/CONTRACTS.md`.
 
 ## Canonical release flow
 
