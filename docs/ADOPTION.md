@@ -19,6 +19,10 @@ python3 scripts/bootstrap_consumer.py \
 
 Edit the generated adapters and disable unused capabilities in caller workflows. If a repository does not have both `package.json` and `pyproject.toml`, remove the irrelevant version source from `.prodkit/release.json`.
 
+Generated callers are GitHub-hosted first and use `ubuntu-latest` for normal CI, Security, and Release execution. They also expose a `workflow_dispatch` runner choice so an operator can rerun the exact workflow/ref with `runner: self-hosted` during a hosted-runner quota/capacity incident. GitHub Actions has no native ordered runner fallback; see `docs/RUNNERS.md` before automating failover.
+
+For public repositories, do not route fork-originated pull-request code to persistent self-hosted runners. For private repositories, keep the same fail-closed rule unless the runner is intentionally ephemeral and isolated for untrusted code.
+
 ## 4. Stabilize required status names
 
 The supplied caller jobs are named `ci` and `security`. GitHub therefore exposes the final reusable checks as `ci / CI Required` and `security / Security Required`. Run both workflows once before configuring them as required checks.

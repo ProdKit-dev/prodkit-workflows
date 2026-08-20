@@ -4,16 +4,30 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner target for manual failover
+        required: true
+        type: choice
+        default: github-hosted
+        options:
+          - github-hosted
+          - self-hosted
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ci:
     name: ci
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-ci.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
-      runner_json: '["self-hosted","linux","x64"]'
+      runner_json: ${{ (github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted') && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
       hygiene_enabled: true
       python_enabled: true
       python_versions_json: '["3.12","3.13","3.14"]'
