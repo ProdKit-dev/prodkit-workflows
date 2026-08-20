@@ -19,19 +19,21 @@ python3 scripts/bootstrap_consumer.py \
 
 Edit the generated adapters and disable unused capabilities in caller workflows. If a repository does not have both `package.json` and `pyproject.toml`, remove the irrelevant version source from `.prodkit/release.json`.
 
-Generated callers support both GitHub-hosted and self-hosted execution. Configure the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE` at organization or repository level:
+Generated callers support GitHub-hosted execution, trusted self-hosted execution, and hosted-first automatic failover. Configure the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE` at organization or repository level:
 
-- `github-hosted` → automatic trusted events use `ubuntu-latest`;
-- `self-hosted` → automatic trusted events use `["self-hosted","Linux","X64"]`;
-- unset/unknown → GitHub-hosted fail-safe default.
+- `auto` → probe `ubuntu-latest`; if that probe fails, route the real trusted workload to `["self-hosted","Linux","X64"]`;
+- `github-hosted` → strict `ubuntu-latest`;
+- `self-hosted` → strict `["self-hosted","Linux","X64"]`;
+- unset → same as `auto`;
+- unknown non-empty value → strict GitHub-hosted fail-safe.
 
-Repository-level configuration overrides organization-level configuration. Manual `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE` and explicit choices override it for that dispatch.
+Repository-level configuration overrides organization-level configuration. Manual `workflow_dispatch` exposes `runner: policy | auto | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE` and explicit choices override it for that dispatch.
 
-Fork-originated pull requests are always routed to GitHub-hosted runners, even if the configured policy is self-hosted. GitHub Actions has no native ordered runner fallback; see `docs/RUNNERS.md` before automating quota/capacity failover.
+Fork-originated pull requests are always routed to GitHub-hosted runners and never participate in self-hosted fallback. The hosted probe does not checkout or execute repository code. Failover is decided before the real reusable workflow begins, so a test/security/release failure never triggers retry on another runner. See `docs/RUNNERS.md` for the exact limitations, including indefinitely queued hosted jobs and the absence of automatic self-hosted-to-hosted fallback.
 
 ## 4. Stabilize required status names
 
-The supplied caller jobs are named `ci` and `security`. GitHub therefore exposes the final reusable checks as `ci / CI Required` and `security / Security Required`. Run both workflows once before configuring them as required checks.
+The supplied caller jobs remain named `ci` and `security` even when automatic failover is enabled. GitHub therefore exposes the final reusable checks as `ci / CI Required` and `security / Security Required`. Run both workflows once before configuring them as required checks.
 
 ## 5. Apply organization rulesets safely
 
@@ -49,7 +51,7 @@ Do not activate the `~ALL` condition while unmigrated repositories still depend 
 
 ## 6. Migrate releases
 
-Replace old release implementations only after the new CI/Security push runs are permanent on `main`. Preserve historical tags/releases. Do not rewrite old release commits. New releases use exactly one path: `workflow_dispatch(version, target_sha)`.
+Replace old release implementations only after the new CI/Security push runs are permanent on `main`. Preserve historical tags/releases. Do not rewrite old release commits. New releases use exactly one publication path: `workflow_dispatch(version, target_sha)`. Under `auto`, runner failover is settled before any guarded release step starts.
 
 ## 7. Audit drift
 

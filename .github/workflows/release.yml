@@ -23,6 +23,7 @@ on:
         default: policy
         options:
           - policy
+          - auto
           - github-hosted
           - self-hosted
 
@@ -34,11 +35,29 @@ permissions:
   artifact-metadata: write
 
 jobs:
+  runner-probe:
+    name: Hosted runner availability
+    if: >-
+      (inputs.runner == 'auto') ||
+      ((inputs.runner == 'policy') &&
+       ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Confirm GitHub-hosted runner availability
+        run: echo "GitHub-hosted runner is available"
+
   release:
+    needs: runner-probe
+    if: >-
+      always() && !cancelled() &&
+      (needs.runner-probe.result == 'success' ||
+       needs.runner-probe.result == 'failure' ||
+       needs.runner-probe.result == 'skipped')
     uses: ./.github/workflows/reusable-release.yml
     with:
       version: ${{ inputs.version }}
       target_sha: ${{ inputs.target_sha }}
       prerelease: ${{ inputs.prerelease }}
-      runner_json: ${{ ((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
+      runner_json: ${{ (((inputs.runner == 'self-hosted') || ((inputs.runner == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted'))) || (needs.runner-probe.result == 'failure')) && '["self-hosted","Linux","X64"]' || '"ubuntu-latest"' }}
       environment: release

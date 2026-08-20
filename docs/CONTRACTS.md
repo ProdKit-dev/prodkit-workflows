@@ -22,17 +22,33 @@ The GitHub Actions UI normally surfaces the four top-level control-plane workflo
 
 Consumer repositories must call reusable workflows through an exact lowercase 40-character Git commit SHA. Floating branches and tags are not an accepted production contract.
 
-All reusable workflow families accept an explicit `runner_json` target and default to GitHub-hosted Ubuntu. Generated callers implement one common runner policy for CI, Security, Release, and Organization Audit:
+All reusable workflow families accept an explicit `runner_json` target and default to GitHub-hosted Ubuntu. Generated callers implement one common runner policy for CI, Security, and Release; the control-plane Organization Audit caller implements the same selection semantics.
 
-- `PRODKIT_RUNNER_MODE=github-hosted` selects `ubuntu-latest` for automatic events.
-- `PRODKIT_RUNNER_MODE=self-hosted` selects `["self-hosted","Linux","X64"]` for trusted automatic events.
-- an unset or unrecognized `PRODKIT_RUNNER_MODE` fails safe to GitHub-hosted Ubuntu.
-- manual `workflow_dispatch` exposes `runner: policy | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE`, while the two explicit values override it for that dispatch.
-- fork-originated pull requests are always forced onto GitHub-hosted runners even when `PRODKIT_RUNNER_MODE=self-hosted`.
+- `PRODKIT_RUNNER_MODE=auto` selects hosted-first automatic failover for trusted events.
+- `PRODKIT_RUNNER_MODE=github-hosted` selects strict `ubuntu-latest` with no automatic self-hosted fallback.
+- `PRODKIT_RUNNER_MODE=self-hosted` selects strict `["self-hosted","Linux","X64"]` for trusted events.
+- an unset `PRODKIT_RUNNER_MODE` behaves as `auto`.
+- an unrecognized non-empty value fails safe to strict GitHub-hosted execution.
+- manual `workflow_dispatch` exposes `runner: policy | auto | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE`, while the other values explicitly override it for that dispatch.
+- fork-originated pull requests are always forced onto GitHub-hosted runners even when `PRODKIT_RUNNER_MODE=auto` or `self-hosted`.
 
 `PRODKIT_RUNNER_MODE` is a non-secret GitHub Actions configuration variable. It may be defined at organization or repository level; repository-level configuration can override the organization policy for a specific consumer. The value is evaluated by the caller repository before the reusable job is routed.
 
-GitHub Actions does not provide ordered `runs-on` fallback. An array of runner labels means the selected runner must match all labels; it does not mean “try hosted, then self-hosted.” Therefore a hosted-runner quota/capacity incident can be handled by changing `PRODKIT_RUNNER_MODE` to `self-hosted` for subsequent runs or by redispatching the exact workflow/ref with `runner: self-hosted`, but transparent automatic detection/redispatch requires a separate trusted controller.
+### Hosted-first failover contract
+
+GitHub Actions does not provide ordered `runs-on` fallback. Therefore `auto` is implemented by the thin caller using a pre-workload probe:
+
+1. schedule a minimal `Hosted runner availability` job on `ubuntu-latest` without checking out or executing repository code;
+2. if the probe succeeds, invoke the unchanged reusable workflow with `runner_json='"ubuntu-latest"'`;
+3. if the probe reaches terminal `failure`, invoke that same reusable workflow with `runner_json='["self-hosted","Linux","X64"]'`;
+4. if the probe is skipped because the operator selected a strict runner mode, route directly to that strict target;
+5. if the workflow is cancelled, do not start the reusable workload.
+
+Failover is therefore decided before product validation or release work begins. A real CI test failure, security finding, migration failure, build failure, release-check failure, or publication failure must remain terminal and must not cause automatic execution on another runner.
+
+The caller job names remain `ci`, `security`, `release`, and `audit`. Stable branch-protection identities such as `ci / CI Required` and `security / Security Required` must not change merely because failover is enabled.
+
+The automatic mechanism covers hosted failures that GitHub resolves as a failed probe, including billing/account/startup failures that terminate before step 1. It cannot bypass a complete Actions control-plane outage and cannot react to a hosted job that remains indefinitely queued without entering a terminal state. There is intentionally no automatic self-hosted-to-hosted fallback because an unavailable self-hosted runner can remain queued without producing a safe in-workflow failure signal.
 
 A self-hosted runner still depends on the GitHub Actions control plane for queueing and dispatch and therefore cannot bypass a complete Actions service outage.
 
