@@ -4,9 +4,10 @@ on:
   workflow_call:
     inputs:
       runner_json:
+        description: JSON value accepted by runs-on. Defaults to GitHub-hosted Ubuntu; callers may explicitly select self-hosted labels.
         required: false
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '"ubuntu-latest"'
       secret_scan_enabled:
         required: false
         type: boolean
