@@ -6,6 +6,9 @@ All notable changes to this repository are documented here.
 
 - Establish the ProdKit organization-wide workflow control plane.
 - Add reusable CI, Security, Release, Release Metadata, CodeQL, Release Proof, runner-policy, and organization-audit orchestration.
+- Add compact CI and Security reusable workflows that execute enabled compatibility/scanning dimensions as steps inside one stable required job, reducing Actions job/check fan-out while preserving `ci / CI Required` and `security / Security Required`.
+- Keep the original expanded CI/Security workflows available as backward-compatible parallel-matrix paths for already-pinned consumers or repositories requiring compatibility versions outside the compact organization set.
+- Make generated consumers and the control-plane canary callers use compact CI/Security by default.
 - Separate lifecycle stages: pull-request validation, main-branch certification, explicit release-candidate proof, immutable publication, and mutable Release metadata repair.
 - Make `Trusted Release Proof` an explicit `workflow_dispatch` release-candidate gate instead of a workflow that re-runs on every pull request, main push, and release tag.
 - Require publication to verify successful exact-SHA main `CI` and `Security` plus one successful dispatched `Trusted Release Proof` for the same current-main source SHA.
@@ -18,11 +21,12 @@ All notable changes to this repository are documented here.
 - Provision explicitly versioned Python/uv and Node/pnpm toolchains for consumer release builds instead of relying on mutable self-hosted-runner state.
 - Add a versioned consumer release manifest contract and bootstrap generator.
 - Bootstrap CI, Security, Trusted Release Proof, Release, and Release Metadata callers by default; CodeQL is opt-in with `--include-codeql`.
+- Make organization audit validate all five default lifecycle callers and their correct central workflow families, including the Release pipeline and Release Metadata selector.
 - Add importable organization main-branch and semantic release-tag rulesets that are disabled by default for safe incremental rollout.
 - Add standalone repository and organization drift validators.
 - Enforce adapter containment beneath `.prodkit/workflows/` instead of relying on string-prefix matching.
 - Enforce the complete release-manifest v1 shape at runtime, including required non-empty version sources and rejection of unknown fields.
 - Reject empty, nested, symlinked, or central-proof-name consumer release payloads before source archives, SBOMs, metadata, and checksums are added.
 - Preserve redacted full-history Gitleaks JSON evidence and support repository-contained reviewed Gitleaks allowlist configuration.
-- Lock lifecycle boundaries, reusable workflow behavior, bootstrap output, manifest schema, runner semantics, and local validators together with regression tests.
-- Maintain an exact control-plane surface of 14 GitHub workflows, a 13-file consumer adapter catalog, and the 4 adapters enabled by the control-plane repository itself.
+- Lock lifecycle boundaries, reusable workflow behavior, bootstrap output, manifest schema, runner semantics, compact execution, and local validators together with regression tests.
+- Maintain an exact control-plane surface of 16 GitHub workflows, a 13-file consumer adapter catalog, and the 4 adapters enabled by the control-plane repository itself.
