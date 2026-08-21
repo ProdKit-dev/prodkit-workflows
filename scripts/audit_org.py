@@ -67,7 +67,7 @@ def main():
         "ci.yml": "reusable-ci-compact.yml",
         "security.yml": "reusable-security-compact.yml",
         "trusted-release-proof.yml": "reusable-release-proof.yml",
-        "release.yml": "reusable-release-pipeline.yml",
+        "release.yml": "reusable-release.yml",
         "release-metadata.yml": "reusable-release-metadata-current.yml",
     }
     direct_release_patterns = [
@@ -113,7 +113,14 @@ def main():
             if any(not re.fullmatch(r"[0-9a-f]{40}", ref) for ref in floating):
                 errors.append(f"{filename} contains floating central reference")
 
+            if "reusable-runner-policy.yml@" in text or "PRODKIT_RUNNER_MODE" in text:
+                errors.append(f"{filename} uses retired runner-controller orchestration")
+
             if filename == "release.yml":
+                if "target_sha: ${{ github.sha }}" not in text:
+                    errors.append("release.yml must publish the dispatched current-main SHA")
+                if "PROOF_WORKFLOW: Trusted Release Proof" not in text:
+                    errors.append("release.yml must gate on Trusted Release Proof")
                 for pattern in direct_release_patterns:
                     if re.search(pattern, text, re.I):
                         errors.append(
