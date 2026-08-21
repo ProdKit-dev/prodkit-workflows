@@ -356,6 +356,8 @@ jobs:
           if not entries: raise SystemExit('consumer release payload set is empty')
           for p in entries:
               if p.name in reserved: raise SystemExit(f'consumer emitted central-owned artifact: {p.name}')
+              if p.name.startswith('.'):
+                  raise SystemExit(f'consumer release payload must not use hidden asset names: {p.name}')
               if p.is_symlink() or not p.is_file(): raise SystemExit(f'consumer release payload must be a flat regular file: {p.name}')
           print(f'consumer release payload contract satisfied: {len(entries)} file(s)')
           PY
