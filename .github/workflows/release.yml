@@ -7,21 +7,11 @@ on:
         description: SemVer without v prefix
         required: true
         type: string
-      target_sha:
-        description: Exact current main SHA with successful permanent CI and Security
-        required: true
-        type: string
       prerelease:
         description: Mark as prerelease
         required: true
         type: boolean
         default: false
-      runner:
-        description: Runner override; policy uses PRODKIT_RUNNER_MODE
-        required: true
-        type: choice
-        default: policy
-        options: [policy, auto, github-hosted, self-hosted]
 
 permissions:
   contents: write
@@ -31,20 +21,12 @@ permissions:
   artifact-metadata: write
 
 jobs:
-  runner:
-    name: runner
-    uses: ./.github/workflows/reusable-runner-policy.yml
-    with:
-      mode: ${{ inputs.runner }}
-      fork_safe: false
-
   release:
     name: release
-    needs: runner
     uses: ./.github/workflows/reusable-release.yml
     with:
       version: ${{ inputs.version }}
-      target_sha: ${{ inputs.target_sha }}
+      target_sha: ${{ github.sha }}
       prerelease: ${{ inputs.prerelease }}
-      runner_json: ${{ needs.runner.outputs.runner_json }}
+      runner_json: '["self-hosted","Linux","X64"]'
       environment: release
