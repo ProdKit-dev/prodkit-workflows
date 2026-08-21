@@ -282,21 +282,47 @@ jobs:
                   if pathlib.Path(name).name != name or name in expected:
                       raise SystemExit(f"unsafe or duplicate checksum asset: {name}")
                   expected[name] = digest.lower()
-              expected_assets = set(expected) | {"SHA256SUMS"}
-              if set(assets) != expected_assets:
+
+              # GitHub historically transport-normalized a hidden `.gitignore`
+              # upload to `default.gitignore`. New releases reject hidden consumer
+              # asset names before publication; this alias exists only so metadata
+              # repair can verify already-published immutable releases byte-for-byte.
+              LEGACY_TRANSPORT_ALIASES = {".gitignore": "default.gitignore"}
+              resolved_assets = {}
+              consumed_remote_names = {"SHA256SUMS"}
+              for name in sorted(expected):
+                  remote_name = name
+                  if remote_name not in assets:
+                      alias = LEGACY_TRANSPORT_ALIASES.get(name)
+                      if alias is None or alias not in assets or alias in expected:
+                          expected_assets = set(expected) | {"SHA256SUMS"}
+                          raise SystemExit(
+                              f"published asset set mismatch: remote={sorted(assets)} "
+                              f"expected={sorted(expected_assets)}"
+                          )
+                      remote_name = alias
+                      print(
+                          f"legacy transport-normalized release asset: {name} -> {remote_name}"
+                      )
+                  resolved_assets[name] = assets[remote_name]
+                  consumed_remote_names.add(remote_name)
+
+              if set(assets) != consumed_remote_names:
+                  expected_assets = set(expected) | {"SHA256SUMS"}
                   raise SystemExit(
                       f"published asset set mismatch: remote={sorted(assets)} "
                       f"expected={sorted(expected_assets)}"
                   )
               for name, digest in sorted(expected.items()):
+                  asset = resolved_assets[name]
                   payload_raw, payload_status = request(
                       "GET",
-                      assets[name]["url"],
+                      asset["url"],
                       accept="application/octet-stream",
                   )
                   if payload_status != 200 or hashlib.sha256(payload_raw).hexdigest() != digest:
                       raise SystemExit(f"published checksum mismatch: {name}")
-                  api_digest = assets[name].get("digest")
+                  api_digest = asset.get("digest")
                   if api_digest and api_digest != f"sha256:{digest}":
                       raise SystemExit(f"GitHub asset digest mismatch: {name}")
               return asset_identity(value)
