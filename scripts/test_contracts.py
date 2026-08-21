@@ -169,7 +169,13 @@ def test_bootstrap() -> None:
             text = (dest / ".github/workflows" / name).read_text()
             if f"@{sha}" not in text or "example/workflows/.github/workflows/" not in text:
                 raise SystemExit(f"bootstrap pin failure: {name}")
-        for name in ("ci.yml", "security.yml", "release.yml", "release-metadata.yml", "trusted-release-proof.yml"):
+        for name in (
+            "ci.yml",
+            "security.yml",
+            "release.yml",
+            "release-metadata.yml",
+            "trusted-release-proof.yml",
+        ):
             assert_thin_caller(dest / ".github/workflows" / name)
 
         adapters = {path.name for path in (dest / ".prodkit/workflows").glob("*.sh")}
@@ -264,7 +270,8 @@ def main() -> None:
             '"event": "workflow_dispatch"',
             "missing successful workflow_dispatch",
             "uses: ./.github/workflows/reusable-release.yml",
-            "required_workflows_json: '[\"CI\",\"Security\"]'",
+            "required_push_workflows_json:",
+            "required_workflows_json: ${{ inputs.required_push_workflows_json }}",
         ),
         name="Reusable Release Pipeline",
     )
