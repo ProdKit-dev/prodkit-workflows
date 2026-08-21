@@ -28,5 +28,5 @@ jobs:
       version: ${{ inputs.version }}
       target_sha: ${{ github.sha }}
       prerelease: ${{ inputs.prerelease }}
-      runner_json: '["self-hosted","Linux","X64"]'
+      runner_json: '"ubuntu-latest"'
       environment: release
