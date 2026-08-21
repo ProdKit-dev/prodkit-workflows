@@ -1,0 +1,76 @@
+name: Apply Hidden Asset Hardening
+
+on:
+  push:
+    branches: [fix/release-hidden-asset-contract]
+    paths: [apply-hidden-asset-hardening-command.json]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Patch central release contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, urllib.error, urllib.parse, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; branch='fix/release-hidden-asset-contract'; token=os.environ['GH_TOKEN']
+          H={'Accept':'application/vnd.github+json','Authorization':f'Bearer {token}','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json','User-Agent':'prodkit-workflows-hidden-asset-hardening'}
+          def api(method,path,payload=None):
+              data=None if payload is None else json.dumps(payload).encode()
+              req=urllib.request.Request('https://api.github.com'+path,data=data,headers=H,method=method)
+              try:
+                  with urllib.request.urlopen(req,timeout=60) as r:
+                      raw=r.read(); return None if not raw else json.loads(raw)
+              except urllib.error.HTTPError as e:
+                  body=e.read().decode(errors='replace'); raise RuntimeError(f'{method} {path} failed: {e.code} {body}') from e
+          def patch(path, old, new, message):
+              ref=urllib.parse.quote(branch,safe='')
+              obj=api('GET',f'/repos/{repo}/contents/{path}?ref={ref}')
+              text=base64.b64decode(obj['content']).decode()
+              if new in text:
+                  return
+              if old not in text:
+                  raise RuntimeError(f'expected patch anchor missing in {path}')
+              updated=text.replace(old,new,1)
+              api('PUT',f'/repos/{repo}/contents/{path}',{
+                  'message':message,
+                  'content':base64.b64encode(updated.encode()).decode(),
+                  'sha':obj['sha'],
+                  'branch':branch,
+              })
+          patch(
+              '.github/workflows/reusable-release.yml',
+              "          for p in entries:\n              if p.name in reserved: raise SystemExit(f'consumer emitted central-owned artifact: {p.name}')\n              if p.is_symlink() or not p.is_file(): raise SystemExit(f'consumer release payload must be a flat regular file: {p.name}')\n",
+              "          for p in entries:\n              if p.name in reserved: raise SystemExit(f'consumer emitted central-owned artifact: {p.name}')\n              if p.name.startswith('.'):\n                  raise SystemExit(f'consumer release payload must not use hidden asset names: {p.name}')\n              if p.is_symlink() or not p.is_file(): raise SystemExit(f'consumer release payload must be a flat regular file: {p.name}')\n",
+              'fix(release): reject hidden consumer asset names',
+          )
+          patch(
+              'scripts/test_contracts.py',
+              "    # Compatibility-only workflow for already-pinned consumers.\n    release_pipeline = (ROOT / \".github/workflows/reusable-release-pipeline.yml\").read_text()\n",
+              "    release = (ROOT / \".github/workflows/reusable-release.yml\").read_text()\n    require(\n        release,\n        (\n            \"p.name.startswith('.')\",\n            \"consumer release payload must not use hidden asset names\",\n        ),\n        name=\"Reusable Release\",\n    )\n\n    # Compatibility-only workflow for already-pinned consumers.\n    release_pipeline = (ROOT / \".github/workflows/reusable-release-pipeline.yml\").read_text()\n",
+              'test(release): lock hidden asset-name guard',
+          )
+          patch(
+              'docs/CONTRACTS.md',
+              "The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds central source archive/SBOM/metadata/checksums/attestation, creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set.\n",
+              "The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds central source archive/SBOM/metadata/checksums/attestation, creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set. Consumer payloads must be flat regular files with transport-stable visible names; hidden names such as `.gitignore` fail closed before sealing because GitHub may normalize them during Release upload.\n",
+              'docs(release): document transport-stable asset names',
+          )
+          result={'state':'success','branch':branch,'guards':['hidden consumer asset rejection','contract regression assertion','publication contract documentation']}
+          path='hidden-asset-hardening-result.json'; ref=urllib.parse.quote(branch,safe='')
+          try:
+              cur=api('GET',f'/repos/{repo}/contents/{path}?ref={ref}')
+          except RuntimeError:
+              cur=None
+          payload={'message':'chore: record hidden-asset hardening result','content':base64.b64encode((json.dumps(result,indent=2)+'\n').encode()).decode(),'branch':branch}
+          if cur: payload['sha']=cur['sha']
+          api('PUT',f'/repos/{repo}/contents/{path}',payload)
+          PY
