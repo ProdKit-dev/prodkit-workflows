@@ -31,7 +31,7 @@ jobs:
   ci:
     name: ci
     needs: runner
-    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-ci.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-ci-compact.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
       runner_json: ${{ needs.runner.outputs.runner_json }}
       hygiene_enabled: true

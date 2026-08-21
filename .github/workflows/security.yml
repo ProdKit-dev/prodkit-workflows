@@ -33,7 +33,7 @@ jobs:
   security:
     name: security
     needs: runner
-    uses: ./.github/workflows/reusable-security.yml
+    uses: ./.github/workflows/reusable-security-compact.yml
     with:
       runner_json: ${{ needs.runner.outputs.runner_json }}
       secret_scan_enabled: true

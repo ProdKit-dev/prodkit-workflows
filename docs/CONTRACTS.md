@@ -1,6 +1,6 @@
 # Consumer Contracts
 
-This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. Reusable workflows, caller templates, bootstrap output, validators, and contract tests must implement the same guarantees.
+This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. Reusable workflows, caller templates, bootstrap output, validators, organization audit, and contract tests must implement the same guarantees.
 
 ## Ownership
 
@@ -8,19 +8,22 @@ This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. Reu
 
 Consumers must not duplicate organization infrastructure such as hosted/self-hosted routing expressions, runner labels, CI/Security aggregators, CodeQL orchestration, exact-source proof orchestration, release publication state machines, or GitHub Release metadata mutation logic.
 
-The control-plane workflow surface includes:
+The control-plane reusable surface includes:
 
 - `reusable-runner-policy.yml`;
-- `reusable-ci.yml`;
-- `reusable-security.yml`;
+- `reusable-ci-compact.yml` — default compact CI;
+- `reusable-security-compact.yml` — default compact Security;
+- `reusable-ci.yml` — backward-compatible expanded CI;
+- `reusable-security.yml` — backward-compatible expanded Security;
 - `reusable-codeql.yml`;
 - `reusable-release-proof.yml`;
 - `reusable-release-pipeline.yml`;
 - `reusable-release.yml`;
 - `reusable-release-metadata-current.yml`;
 - `reusable-release-metadata.yml`;
-- `reusable-org-audit.yml`;
-- the repository's own thin CI, Security, Release, and Organization Audit callers.
+- `reusable-org-audit.yml`.
+
+The control-plane repository itself exposes thin `CI`, `Security`, `Release`, and `Organization Audit` callers. Generated consumers expose `CI`, `Security`, `Trusted Release Proof`, `Release`, and `Release Metadata`, plus optional `CodeQL`.
 
 All cross-repository reusable workflow calls must pin an exact lowercase 40-character Git commit SHA. Floating branches and tags are not production contracts.
 
@@ -58,7 +61,7 @@ GitHub Actions has no native ordered `runs-on` fallback and cannot safely react 
 
 ## CI
 
-`reusable-ci.yml` owns matrix execution, checkout, adapter containment checks, and the stable `CI Required` aggregator. Enabled adapters must be regular non-symlink files beneath `.prodkit/workflows/`.
+Generated consumers use `reusable-ci-compact.yml`. It owns checkout, adapter containment checks, toolchain provisioning, compatibility selection, PostgreSQL isolation, aggregate outcome evaluation, and the stable `CI Required` job.
 
 Available adapters are:
 
@@ -69,11 +72,15 @@ Available adapters are:
 - `ci-container.sh`;
 - `ci-custom.sh`.
 
-Disabled capabilities may be skipped. Any enabled capability must succeed for `CI Required` to pass.
+Compact CI supports Python `3.12`, `3.13`, `3.14` and Node `20`, `22`, `24`; callers may select any non-empty subset. Duplicate or unsupported compact-version entries fail closed. Enabled compatibility dimensions execute as steps inside the single `CI Required` job. Enabled contract steps use `continue-on-error` only to collect all outcomes; the final verifier fails if any enabled setup or adapter step failed.
+
+`reusable-ci.yml` remains available as the expanded compatibility path. It provides independent jobs/matrices and the same stable `CI Required` gate. Existing immutable consumers remain valid until intentionally repinned. A consumer needing versions outside the compact supported set may explicitly continue using the expanded workflow rather than weakening or silently changing its matrix.
+
+Disabled capabilities may be skipped. Any enabled capability must succeed for `CI Required` to pass in either execution mode.
 
 ## Security
 
-`reusable-security.yml` owns full-history Gitleaks, source SPDX 2.3 SBOM generation, dependency-audit adapters, container vulnerability scanning, custom security adapters, evidence artifacts, and the stable `Security Required` aggregator.
+Generated consumers use `reusable-security-compact.yml`. It owns checkout, full-history Gitleaks, source SPDX 2.3 SBOM generation, dependency-audit adapters, container vulnerability scanning, custom security adapters, evidence artifacts, and aggregate outcome evaluation inside the single stable `Security Required` job.
 
 Repository adapters are:
 
@@ -82,7 +89,18 @@ Repository adapters are:
 - `security-container-build.sh`;
 - `security-custom.sh`.
 
-A repository may provide a narrowly reviewed repository-contained Gitleaks configuration. Enabled adapter paths are containment-checked beneath `.prodkit/workflows/`.
+A repository may provide a narrowly reviewed repository-contained Gitleaks configuration. Enabled adapter paths are containment-checked beneath `.prodkit/workflows/`. Required evidence-upload outcomes are included in the compact final gate, so `continue-on-error` on intermediate steps cannot make a failed enabled security control green.
+
+`reusable-security.yml` remains the backward-compatible expanded path with independent jobs and the same stable `Security Required` gate.
+
+## Stable required-check identity
+
+Both compact and expanded execution preserve the branch-protection contract:
+
+- caller job `ci` + reusable job `CI Required` renders as `ci / CI Required`;
+- caller job `security` + reusable job `Security Required` renders as `security / Security Required`.
+
+Organization rulesets must require those aggregate checks rather than individual compatibility or scan steps. Switching a repository from expanded to compact execution therefore does not require a branch-protection rename.
 
 ## CodeQL
 
@@ -127,7 +145,7 @@ A release tag is immutable. An existing tag on another commit is a hard failure.
 
 Metadata repair uses current `main` only as the canonical presentation source. It requires the existing immutable tag to resolve exactly to the supplied historical `source_sha`, verifies the published `SHA256SUMS` and every payload, snapshots asset identity/publication flags, PATCHes only Release `name` and `body`, then re-verifies the tag, assets, checksums, draft/prerelease state, and canonical presentation.
 
-When explicitly enabled, current-release metadata orchestration may also normalize every published SemVer Release **name** from `release.name_template`. That operation snapshots and preserves each release body, tag, publication flags, and asset identity; it changes no payload and no historical note body.
+When explicitly enabled, current-release metadata orchestration may also normalize every published SemVer Release name/body from canonical repository metadata while preserving tag, publication flags/timestamp, target commitish, and asset identity.
 
 Metadata repair cannot create or move tags, create a missing Release, rebuild/upload/delete/replace assets, alter checksums, or change draft/prerelease state.
 
@@ -135,4 +153,16 @@ Metadata repair cannot create or move tags, create a missing Release, rebuild/up
 
 `bootstrap_consumer.py` installs thin callers for CI, Security, Trusted Release Proof, Release, and Release Metadata, plus the complete adapter catalog. `--include-codeql` additionally installs the CodeQL caller.
 
-Generated callers contain only lifecycle triggers, minimal repository capability configuration, a call to `Reusable Runner Policy`, and the appropriate reusable workflow call. Runner implementation details must remain absent.
+Generated CI and Security callers use the compact reusable workflows by default. Generated callers contain only lifecycle triggers, minimal repository capability configuration, a call to `Reusable Runner Policy`, and the appropriate reusable workflow call. Runner implementation details must remain absent.
+
+## Organization audit
+
+`scripts/audit_org.py` treats all five default lifecycle callers as required for migrated repositories and verifies the exact central workflow family at the requested immutable SHA:
+
+- `ci.yml` -> `reusable-ci-compact.yml`;
+- `security.yml` -> `reusable-security-compact.yml`;
+- `trusted-release-proof.yml` -> `reusable-release-proof.yml`;
+- `release.yml` -> `reusable-release-pipeline.yml`;
+- `release-metadata.yml` -> `reusable-release-metadata-current.yml`.
+
+The audit also rejects floating central references and local publication implementation in `release.yml`.

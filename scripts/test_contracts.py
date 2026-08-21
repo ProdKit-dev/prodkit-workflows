@@ -15,7 +15,9 @@ EXPECTED_GITHUB_WORKFLOWS = {
     "release.yml",
     "org-audit.yml",
     "reusable-ci.yml",
+    "reusable-ci-compact.yml",
     "reusable-security.yml",
+    "reusable-security-compact.yml",
     "reusable-release.yml",
     "reusable-release-metadata.yml",
     "reusable-org-audit.yml",
@@ -178,6 +180,13 @@ def test_bootstrap() -> None:
         ):
             assert_thin_caller(dest / ".github/workflows" / name)
 
+        ci = (dest / ".github/workflows/ci.yml").read_text()
+        security = (dest / ".github/workflows/security.yml").read_text()
+        if "reusable-ci-compact.yml@" not in ci:
+            raise SystemExit("bootstrap CI caller must use compact reusable CI")
+        if "reusable-security-compact.yml@" not in security:
+            raise SystemExit("bootstrap Security caller must use compact reusable Security")
+
         adapters = {path.name for path in (dest / ".prodkit/workflows").glob("*.sh")}
         if adapters != EXPECTED_CONSUMER_ADAPTERS:
             raise SystemExit(f"bootstrap adapter drift: {sorted(adapters)}")
@@ -247,6 +256,49 @@ def main() -> None:
         ),
         name="Reusable Runner Policy",
     )
+
+    compact_ci = (ROOT / ".github/workflows/reusable-ci-compact.yml").read_text()
+    require(
+        compact_ci,
+        (
+            "name: CI Required",
+            "Validate compact matrix contract",
+            "Python 3.12",
+            "Python 3.13",
+            "Python 3.14",
+            "Node 20",
+            "Node 22",
+            "Node 24",
+            "Start isolated PostgreSQL",
+            "continue-on-error: true",
+            "CI compact contract satisfied",
+        ),
+        name="Reusable Compact CI",
+    )
+
+    compact_security = (ROOT / ".github/workflows/reusable-security-compact.yml").read_text()
+    require(
+        compact_security,
+        (
+            "name: Security Required",
+            "Secret scan",
+            "Preserve redacted Gitleaks evidence",
+            "Python dependency audit",
+            "Node dependency audit",
+            "Container vulnerability scan",
+            "Source SBOM",
+            "continue-on-error: true",
+            "Security compact contract satisfied",
+        ),
+        name="Reusable Compact Security",
+    )
+
+    self_ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    self_security = (ROOT / ".github/workflows/security.yml").read_text()
+    if "uses: ./.github/workflows/reusable-ci-compact.yml" not in self_ci:
+        raise SystemExit("control-plane CI must exercise compact reusable CI")
+    if "uses: ./.github/workflows/reusable-security-compact.yml" not in self_security:
+        raise SystemExit("control-plane Security must exercise compact reusable Security")
 
     proof = (ROOT / ".github/workflows/reusable-release-proof.yml").read_text()
     require(
