@@ -42,7 +42,9 @@ def check(security_only: bool = False) -> list[str]:
         expected = [
             ".github/workflows/reusable-runner-policy.yml",
             ".github/workflows/reusable-ci.yml",
+            ".github/workflows/reusable-ci-compact.yml",
             ".github/workflows/reusable-security.yml",
+            ".github/workflows/reusable-security-compact.yml",
             ".github/workflows/reusable-codeql.yml",
             ".github/workflows/reusable-release-proof.yml",
             ".github/workflows/reusable-release-pipeline.yml",
