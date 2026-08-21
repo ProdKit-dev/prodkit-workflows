@@ -39,8 +39,9 @@ jobs:
               Path('.github/workflows/reusable-release-metadata.yml'): 1,
               Path('.github/workflows/reusable-release-metadata-current.yml'): 2,
           }
-          old = '    environment: ${{ inputs.environment }}\n'
-          new = '    environment:\n      name: ${{ inputs.environment }}\n      deployment: false\n'
+          expression = '$' + '{{ inputs.environment }}'
+          old = f'    environment: {expression}\n'
+          new = f'    environment:\n      name: {expression}\n      deployment: false\n'
           for path, expected in expected_counts.items():
               text = path.read_text(encoding='utf-8')
               count = text.count(old)
