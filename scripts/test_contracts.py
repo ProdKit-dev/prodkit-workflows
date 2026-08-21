@@ -258,6 +258,9 @@ def main() -> None:
             "proof path escapes .prodkit/workflows",
             "Assert source remained immutable",
             "trusted-release-proof-${{ inputs.source_sha }}",
+            "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
+            "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+            "corepack prepare",
         ),
         name="Reusable Release Proof",
     )
@@ -296,7 +299,10 @@ def main() -> None:
             "version and source_sha must be supplied together",
             "uses: ./.github/workflows/reusable-release-metadata.yml",
             "normalize_all_titles:",
-            "Normalize SemVer Release names only",
+            "normalize_all_releases:",
+            "Normalize SemVer Release names and canonical notes",
+            "published Release has non-canonical tag",
+            "immutable tag ref changed during presentation repair",
         ),
         name="Reusable Current Release Metadata",
     )
