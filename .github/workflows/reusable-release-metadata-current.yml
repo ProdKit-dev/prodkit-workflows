@@ -161,9 +161,7 @@ jobs:
       runner_json: ${{ inputs.runner_json }}
       manifest_path: ${{ inputs.manifest_path }}
       main_branch: ${{ inputs.main_branch }}
-      environment:
-      name: ${{ inputs.environment }}
-      deployment: false
+      environment: ${{ inputs.environment }}
 
   normalize-releases:
     name: Normalize published release presentation
