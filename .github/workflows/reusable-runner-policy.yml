@@ -159,11 +159,37 @@ jobs:
           esac
           [[ "$workspace" != "/" ]]
           mkdir -p "$workspace"
-          shopt -s dotglob nullglob
-          entries=("$workspace"/*)
-          if (( ${#entries[@]} > 0 )); then
-            rm -rf -- "${entries[@]}"
+
+          cleanup_workspace() {
+            shopt -s dotglob nullglob
+            local entries=("$workspace"/*)
+            if (( ${#entries[@]} > 0 )); then
+              rm -rf -- "${entries[@]}"
+            fi
+          }
+
+          if ! cleanup_workspace; then
+            uid="$(id -u)"
+            gid="$(id -g)"
+            echo "workspace cleanup hit privileged files; repairing ownership"
+            if command -v sudo >/dev/null 2>&1 && sudo -n chown -R "$uid:$gid" "$workspace"; then
+              echo "workspace ownership repaired with sudo"
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm \
+                --user 0:0 \
+                -e TARGET_UID="$uid" \
+                -e TARGET_GID="$gid" \
+                -v "$workspace:/workspace" \
+                alpine:3.22 \
+                sh -ceu 'chown -R "$TARGET_UID:$TARGET_GID" /workspace'
+              echo "workspace ownership repaired with Docker root"
+            else
+              echo "cannot repair privileged files: passwordless sudo and Docker are unavailable" >&2
+              exit 1
+            fi
+            cleanup_workspace
           fi
+
           if find "$workspace" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
             echo "trusted self-hosted workspace is not empty after cleanup: $workspace" >&2
             exit 1
