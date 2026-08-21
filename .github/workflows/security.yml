@@ -20,7 +20,7 @@ jobs:
     name: security
     uses: ./.github/workflows/reusable-security-compact.yml
     with:
-      runner_json: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '"ubuntu-latest"' || '["self-hosted","Linux","X64"]' }}
+      runner_json: '"ubuntu-latest"'
       secret_scan_enabled: true
       sbom_enabled: true
       python_enabled: false
