@@ -107,6 +107,24 @@ def write_manifest_fixture(root: pathlib.Path, manifest: dict[str, object]) -> N
     (root / ".prodkit/release.json").write_text(json.dumps(manifest))
 
 
+def test_manifest_contract() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        write_manifest_fixture(root, base_manifest())
+        run_validator(root, expect_success=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        manifest = base_manifest()
+        manifest["version"] = {"sources": []}
+        write_manifest_fixture(root, manifest)
+        run_validator(root, expect_success=False)
+
+    schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
+    if schema.get("additionalProperties") is not False:
+        raise SystemExit("release schema must reject unknown top-level properties")
+
+
 def assert_direct_caller(path: pathlib.Path) -> None:
     text = path.read_text()
     if "reusable-runner-policy.yml@" in text:
@@ -120,7 +138,9 @@ def assert_direct_caller(path: pathlib.Path) -> None:
         "options: [policy, auto, github-hosted, self-hosted]",
     ):
         if forbidden in text:
-            raise SystemExit(f"consumer caller contains retired runner-controller detail: {path}: {forbidden}")
+            raise SystemExit(
+                f"consumer caller contains retired runner-controller detail: {path}: {forbidden}"
+            )
     if "runner_json:" not in text:
         raise SystemExit(f"consumer caller must select runner JSON directly: {path}")
 
@@ -228,8 +248,7 @@ def main() -> None:
 
     test_bootstrap()
 
-    # Kept only for already-pinned consumers. New templates and self-callers must
-    # not route through this controller.
+    # Compatibility-only workflow for already-pinned consumers.
     runner = (ROOT / ".github/workflows/reusable-runner-policy.yml").read_text()
     require(
         runner,
@@ -305,7 +324,7 @@ def main() -> None:
         name="Reusable Release Proof",
     )
 
-    # Kept for backward compatibility; generated consumers call reusable-release.yml directly.
+    # Compatibility-only wrapper for already-pinned consumers.
     release_pipeline = (ROOT / ".github/workflows/reusable-release-pipeline.yml").read_text()
     require(
         release_pipeline,
@@ -356,6 +375,18 @@ def main() -> None:
             raise SystemExit(f"self caller contains retired runner-controller state: {name}")
         if "runner_json:" not in text:
             raise SystemExit(f"self caller must choose runner JSON directly: {name}")
+
+    audit = (ROOT / "scripts/audit_org.py").read_text()
+    require(
+        audit,
+        (
+            '"release.yml": "reusable-release.yml"',
+            "retired runner-controller orchestration",
+            'target_sha: ${{ github.sha }}',
+            "PROOF_WORKFLOW: Trusted Release Proof",
+        ),
+        name="Organization Audit",
+    )
 
     lifecycle = (ROOT / "docs/LIFECYCLE.md").read_text()
     require(
