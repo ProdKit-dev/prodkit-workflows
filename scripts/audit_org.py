@@ -68,6 +68,7 @@ def main():
         "security.yml": "reusable-security-compact.yml",
         "trusted-release-proof.yml": "reusable-release-proof.yml",
         "release.yml": "reusable-release.yml",
+        "release-verification.yml": "reusable-release-verification.yml",
         "release-metadata.yml": "reusable-release-metadata-current.yml",
     }
     direct_release_patterns = [
@@ -116,6 +117,21 @@ def main():
             if "reusable-runner-policy.yml@" in text or "PRODKIT_RUNNER_MODE" in text:
                 errors.append(f"{filename} uses retired runner-controller orchestration")
 
+            if filename == "trusted-release-proof.yml":
+                if "reusable-release-promote.yml@" not in text or "needs: proof" not in text:
+                    errors.append(
+                        "trusted-release-proof.yml must promote only after successful proof"
+                    )
+                if "actions: write" not in text:
+                    errors.append(
+                        "trusted-release-proof.yml promotion must be allowed to dispatch Release"
+                    )
+                for forbidden in ("time.sleep(", "while time.time()", "wait_for_release"):
+                    if forbidden in text:
+                        errors.append(
+                            "trusted-release-proof.yml must not wait for Release on the trusted runner"
+                        )
+
             if filename == "release.yml":
                 if "target_sha: ${{ github.sha }}" not in text:
                     errors.append("release.yml must publish the dispatched current-main SHA")
@@ -126,6 +142,12 @@ def main():
                         errors.append(
                             f"release.yml contains local publication implementation: {pattern}"
                         )
+
+            if filename == "release-verification.yml":
+                if "workflow_run:" not in text or 'workflows: ["Release"]' not in text:
+                    errors.append("release-verification.yml must run after Release completion")
+                if "actions: write" in text or "contents: write" in text:
+                    errors.append("release-verification.yml must remain read-only")
 
         if errors:
             findings.append({"repository": repo, "errors": sorted(set(errors))})
