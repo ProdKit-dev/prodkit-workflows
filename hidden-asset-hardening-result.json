@@ -1,0 +1,10 @@
+{
+  "state": "success",
+  "branch": "fix/release-hidden-asset-contract",
+  "staged_workflow_blob_sha": "b4a6f79af30d87c81be38c550e3e7c5f83f34441",
+  "guards": [
+    "hidden consumer asset rejection",
+    "contract regression assertion",
+    "publication contract documentation"
+  ]
+}
