@@ -30,6 +30,6 @@ jobs:
       workflows_repository: ProdKit-dev/prodkit-workflows
       required_sha: ${{ inputs.required_sha }}
       repository_prefix: ${{ inputs.repository_prefix }}
-      runner_json: '["self-hosted","Linux","X64"]'
+      runner_json: '"ubuntu-latest"'
     secrets:
       org_audit_token: ${{ secrets.ORG_AUDIT_TOKEN }}
