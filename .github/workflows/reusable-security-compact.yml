@@ -1,0 +1,298 @@
+name: Reusable Security Compact
+
+on:
+  workflow_call:
+    inputs:
+      runner_json:
+        description: JSON value accepted by runs-on.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      secret_scan_enabled:
+        required: false
+        type: boolean
+        default: true
+      gitleaks_image:
+        required: false
+        type: string
+        default: ghcr.io/gitleaks/gitleaks:v8.30.1
+      gitleaks_config_path:
+        description: Optional repository-relative Gitleaks config path for reviewed allowlists.
+        required: false
+        type: string
+        default: ""
+      sbom_enabled:
+        required: false
+        type: boolean
+        default: true
+      syft_image:
+        required: false
+        type: string
+        default: anchore/syft:v1.42.3
+      python_enabled:
+        required: false
+        type: boolean
+        default: false
+      python_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-python.sh
+      node_enabled:
+        required: false
+        type: boolean
+        default: false
+      node_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-node.sh
+      container_enabled:
+        required: false
+        type: boolean
+        default: false
+      container_build_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-container-build.sh
+      custom_enabled:
+        required: false
+        type: boolean
+        default: false
+      custom_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/security-custom.sh
+
+permissions:
+  contents: read
+
+jobs:
+  required:
+    name: Security Required
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Secret scan
+        id: secrets
+        if: inputs.secret_scan_enabled
+        continue-on-error: true
+        env:
+          GITLEAKS_IMAGE: ${{ inputs.gitleaks_image }}
+          GITLEAKS_CONFIG_PATH: ${{ inputs.gitleaks_config_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/gitleaks-report.json"
+          rm -f "$report"
+          args=(
+            git /repo
+            --redact
+            --no-banner
+            --exit-code 1
+            --report-format json
+            --report-path /out/gitleaks-report.json
+            --log-opts="--remotes=origin --tags HEAD"
+          )
+          if [[ -n "$GITLEAKS_CONFIG_PATH" ]]; then
+            case "$GITLEAKS_CONFIG_PATH" in /*) echo "gitleaks_config_path must be repository-relative" >&2; exit 1 ;; esac
+            repo_root="$(realpath .)"
+            config_resolved="$(realpath "$GITLEAKS_CONFIG_PATH")"
+            [[ "$config_resolved" == "$repo_root/"* ]] || { echo "gitleaks_config_path escapes repository" >&2; exit 1; }
+            test -f "$GITLEAKS_CONFIG_PATH" && test ! -L "$GITLEAKS_CONFIG_PATH"
+            args+=(--config "/repo/$GITLEAKS_CONFIG_PATH")
+          fi
+          docker run --rm \
+            -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP:/out" \
+            "$GITLEAKS_IMAGE" "${args[@]}"
+
+      - name: Preserve redacted Gitleaks evidence
+        id: gitleaks_artifact
+        if: always() && inputs.secret_scan_enabled
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitleaks-${{ github.sha }}
+          path: ${{ runner.temp }}/gitleaks-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Set up uv
+        id: setup_uv
+        if: inputs.python_enabled
+        continue-on-error: true
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.10.0"
+          enable-cache: true
+
+      - name: Python dependency audit
+        id: python
+        if: inputs.python_enabled && steps.setup_uv.outcome == 'success'
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Set up Node 24
+        id: setup_node
+        if: inputs.node_enabled
+        continue-on-error: true
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Node dependency audit
+        id: node
+        if: inputs.node_enabled && steps.setup_node.outcome == 'success'
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Build security image contract
+        id: container_build
+        if: inputs.container_enabled
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.container_build_script }}
+          PRODKIT_SECURITY_IMAGE: prodkit-security:${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+          docker image inspect "$PRODKIT_SECURITY_IMAGE" >/dev/null
+
+      - name: Container vulnerability scan
+        id: trivy
+        if: inputs.container_enabled && steps.container_build.outcome == 'success'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: prodkit-security:${{ github.sha }}
+          format: json
+          output: trivy-results.json
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          cache: "false"
+
+      - name: Preserve Trivy evidence
+        id: trivy_artifact
+        if: always() && inputs.container_enabled
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-${{ github.sha }}
+          path: trivy-results.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Clean security image
+        if: always() && inputs.container_enabled
+        shell: bash
+        run: docker image rm -f "prodkit-security:${GITHUB_SHA}" >/dev/null 2>&1 || true
+
+      - name: Source SBOM
+        id: sbom
+        if: inputs.sbom_enabled
+        continue-on-error: true
+        env:
+          SYFT_IMAGE: ${{ inputs.syft_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/repo:ro" "$SYFT_IMAGE" dir:/repo -o spdx-json > repository.spdx.json
+          test -s repository.spdx.json
+          python3 - <<'PY'
+          import json
+          with open('repository.spdx.json', encoding='utf-8') as handle:
+              payload=json.load(handle)
+          if payload.get('spdxVersion') != 'SPDX-2.3':
+              raise SystemExit('expected SPDX-2.3')
+          if not isinstance(payload.get('packages'), list):
+              raise SystemExit('SBOM packages missing')
+          PY
+
+      - name: Preserve SBOM evidence
+        id: sbom_artifact
+        if: always() && inputs.sbom_enabled
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ github.sha }}
+          path: repository.spdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Custom security
+        id: custom
+        if: inputs.custom_enabled
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.custom_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Verify Security contract
+        if: always()
+        env:
+          SECRETS: ${{ steps.secrets.outcome }}
+          GITLEAKS_ARTIFACT: ${{ steps.gitleaks_artifact.outcome }}
+          SETUP_UV: ${{ steps.setup_uv.outcome }}
+          PYTHON: ${{ steps.python.outcome }}
+          SETUP_NODE: ${{ steps.setup_node.outcome }}
+          NODE: ${{ steps.node.outcome }}
+          CONTAINER_BUILD: ${{ steps.container_build.outcome }}
+          TRIVY: ${{ steps.trivy.outcome }}
+          TRIVY_ARTIFACT: ${{ steps.trivy_artifact.outcome }}
+          SBOM: ${{ steps.sbom.outcome }}
+          SBOM_ARTIFACT: ${{ steps.sbom_artifact.outcome }}
+          CUSTOM: ${{ steps.custom.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          names=(
+              'SECRETS','GITLEAKS_ARTIFACT','SETUP_UV','PYTHON','SETUP_NODE','NODE',
+              'CONTAINER_BUILD','TRIVY','TRIVY_ARTIFACT','SBOM','SBOM_ARTIFACT','CUSTOM',
+          )
+          bad={name: os.environ.get(name, '') for name in names if os.environ.get(name, '') not in {'success','skipped'}}
+          if bad:
+              raise SystemExit(f'Security compact contract failed: {bad}')
+          print('Security compact contract satisfied')
+          PY
