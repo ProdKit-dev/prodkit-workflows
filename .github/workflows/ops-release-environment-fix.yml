@@ -52,7 +52,6 @@ jobs:
                   raise SystemExit(f'{path}: deployment:false marker missing')
           PY
 
-          # Evaluate exactly the candidate tree, not the temporary operator tree.
           rm -- .github/workflows/ops-release-environment-fix.yml
           python3 scripts/test_contracts_current.py
           python3 scripts/test_release_metadata_compat.py
@@ -68,4 +67,6 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'fix(release): avoid deployment records for control-plane publication'
+          echo "CANDIDATE_SHA=$(git rev-parse HEAD)"
+          echo "CANDIDATE_TREE=$(git rev-parse HEAD^{tree})"
           git push origin HEAD:fix/release-environments-without-deployments
