@@ -143,7 +143,7 @@ The generated caller supplies:
 target_sha: ${{ github.sha }}
 ```
 
-The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds central source archive/SBOM/metadata/checksums/attestation, creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set.
+The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds central source archive/SBOM/metadata/checksums/attestation, creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set. Consumer payloads must be flat regular files with transport-stable visible names; hidden names such as `.gitignore` fail closed before sealing because GitHub may normalize them during Release upload.
 
 Tag movement is forbidden. An existing tag on another commit fails hard. A verified already-published release is treated idempotently.
 
