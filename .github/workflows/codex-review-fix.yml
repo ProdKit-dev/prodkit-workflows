@@ -1,0 +1,80 @@
+name: Codex Release Lifecycle Fix
+
+on:
+  push:
+    branches: [fix/release-promotion-codex-review]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/release-promotion-codex-review
+          fetch-depth: 0
+      - name: Apply Codex review fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/reusable-release-promote.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '''          if release is not None:\n              ref = api("GET", f"/git/ref/tags/{urllib.parse.quote(tag, safe='')}")\n              obj = ref["object"]\n              seen: set[str] = set()\n              while obj.get("type") == "tag":\n                  sha = str(obj["sha"])\n                  if sha in seen:\n                      raise SystemExit("tag object cycle detected")\n                  seen.add(sha)\n                  obj = api("GET", f"/git/tags/{sha}")["object"]\n              if obj.get("type") != "commit" or obj.get("sha") != source_sha:\n                  raise SystemExit(f"existing {tag} does not resolve to proven SHA {source_sha}")\n              print(f"{tag} is already published on the proven SHA; promotion is idempotently complete")\n              raise SystemExit(0)\n'''
+          new = '''          if release is not None:\n              ref = api("GET", f"/git/ref/tags/{urllib.parse.quote(tag, safe='')}")\n              obj = ref["object"]\n              seen: set[str] = set()\n              while obj.get("type") == "tag":\n                  sha = str(obj["sha"])\n                  if sha in seen:\n                      raise SystemExit("tag object cycle detected")\n                  seen.add(sha)\n                  obj = api("GET", f"/git/tags/{sha}")["object"]\n              if obj.get("type") != "commit" or obj.get("sha") != source_sha:\n                  raise SystemExit(f"existing {tag} does not resolve to proven SHA {source_sha}")\n              print(\n                  f"{tag} already exists on the proven SHA; dispatching the idempotent "\n                  "Release workflow again so publication is fully re-verified"\n              )\n'''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected existing-release promotion anchor')
+          text = text.replace(old, new)
+          old2 = '''          reusable = [\n              run\n              for run in release_runs\n              if run.get("status") in {"queued", "in_progress", "pending"}\n              or (run.get("status") == "completed" and run.get("conclusion") == "success")\n          ]\n'''
+          new2 = '''          reusable = [\n              run\n              for run in release_runs\n              if run.get("status") in {"queued", "in_progress", "pending"}\n          ]\n'''
+          if text.count(old2) != 1:
+              raise SystemExit('unexpected release-run reuse anchor')
+          text = text.replace(old2, new2)
+          text = text.replace(
+              'print(f"Release run {selected[\'id\']} already exists; no duplicate dispatch")',
+              'print(f"active Release run {selected[\'id\']} already exists; no duplicate dispatch")',
+          )
+          path.write_text(text, encoding='utf-8')
+
+          makefile = Path('Makefile')
+          make = makefile.read_text(encoding='utf-8')
+          if '\tpython3 scripts/test_contracts.py\n' not in make:
+              raise SystemExit('Makefile contract anchor missing')
+          makefile.write_text(
+              make.replace(
+                  '\tpython3 scripts/test_contracts.py\n',
+                  '\tpython3 scripts/test_contracts_current.py\n',
+              ),
+              encoding='utf-8',
+          )
+
+          lifecycle = Path('docs/LIFECYCLE.md')
+          docs = lifecycle.read_text(encoding='utf-8')
+          needle = 'The promotion job never polls or waits for Release while holding the trusted runner. It dispatches once and exits.\n'
+          replacement = needle + 'If the tag/Release already exists on the proven SHA, promotion still re-dispatches the idempotent Release workflow so its complete payload and post-publication verification run again; an existing Release object alone is never treated as closure evidence.\n'
+          if needle not in docs:
+              raise SystemExit('lifecycle promotion anchor missing')
+          lifecycle.write_text(docs.replace(needle, replacement), encoding='utf-8')
+          PY
+      - name: Validate canonical repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          make check
+          python3 scripts/test_release_lifecycle.py
+          git diff --check
+      - name: Commit validated fixes and remove operator
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/codex-review-fix.yml
+          git add .github/workflows/reusable-release-promote.yml Makefile docs/LIFECYCLE.md
+          git commit -m "fix(release): reverify existing publications"
+          git push origin HEAD:fix/release-promotion-codex-review
