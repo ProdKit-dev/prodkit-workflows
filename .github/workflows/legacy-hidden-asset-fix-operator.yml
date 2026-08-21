@@ -1,3 +1,4 @@
+# Temporary one-shot patch operator; self-deletes after applying the guarded fix.
 name: Legacy Hidden Asset Fix Operator
 
 on:
