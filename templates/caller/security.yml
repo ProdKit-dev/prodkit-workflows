@@ -5,13 +5,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      runner:
-        description: Runner override; policy uses PRODKIT_RUNNER_MODE
-        required: true
-        type: choice
-        default: policy
-        options: [policy, auto, github-hosted, self-hosted]
   schedule:
     - cron: "37 4 * * 1"
 
@@ -23,19 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  runner:
-    name: runner
-    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-runner-policy.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
-    with:
-      mode: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'policy' }}
-      fork_safe: true
-
   security:
     name: security
-    needs: runner
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-security-compact.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
-      runner_json: ${{ needs.runner.outputs.runner_json }}
+      runner_json: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '"ubuntu-latest"' || (vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]') }}
       secret_scan_enabled: true
       sbom_enabled: true
       python_enabled: true

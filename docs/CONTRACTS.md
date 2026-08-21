@@ -2,167 +2,195 @@
 
 This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. Reusable workflows, caller templates, bootstrap output, validators, organization audit, and contract tests must implement the same guarantees.
 
-## Ownership
+## Ownership boundary
 
-`prodkit-workflows` owns organization workflow orchestration. Consumer repositories own configuration, `.prodkit/release.json`, canonical version notes, and repository-specific adapters beneath `.prodkit/workflows/`.
+`prodkit-workflows` owns reusable workload implementation: CI/Security aggregation, toolchain setup, evidence generation, exact-source proof mechanics, guarded publication, metadata repair, CodeQL orchestration, and organization audit.
 
-Consumers must not duplicate organization infrastructure such as hosted/self-hosted routing expressions, runner labels, CI/Security aggregators, CodeQL orchestration, exact-source proof orchestration, release publication state machines, or GitHub Release metadata mutation logic.
+Consumer repositories own:
 
-The control-plane reusable surface includes:
+- workflow triggers and direct runner target selection;
+- `.prodkit/release.json`;
+- canonical version notes/changelog;
+- repository-specific adapters beneath `.prodkit/workflows/`.
 
-- `reusable-runner-policy.yml`;
+New consumers **must not** insert a runner-controller workflow between their caller and the reusable workload. They pass `runner_json` directly.
+
+All cross-repository reusable workflow calls must pin an exact lowercase 40-character Git commit SHA.
+
+## Reusable surface
+
+Normative reusable workloads:
+
 - `reusable-ci-compact.yml` — default compact CI;
 - `reusable-security-compact.yml` — default compact Security;
-- `reusable-ci.yml` — backward-compatible expanded CI;
-- `reusable-security.yml` — backward-compatible expanded Security;
+- `reusable-ci.yml` — expanded compatibility CI;
+- `reusable-security.yml` — expanded compatibility Security;
 - `reusable-codeql.yml`;
 - `reusable-release-proof.yml`;
-- `reusable-release-pipeline.yml`;
 - `reusable-release.yml`;
 - `reusable-release-metadata-current.yml`;
 - `reusable-release-metadata.yml`;
 - `reusable-org-audit.yml`.
 
-The control-plane repository itself exposes thin `CI`, `Security`, `Release`, and `Organization Audit` callers. Generated consumers expose `CI`, `Security`, `Trusted Release Proof`, `Release`, and `Release Metadata`, plus optional `CodeQL`.
+Compatibility-only surfaces retained for already-pinned consumers:
 
-All cross-repository reusable workflow calls must pin an exact lowercase 40-character Git commit SHA. Floating branches and tags are not production contracts.
+- `reusable-runner-policy.yml`;
+- `reusable-release-pipeline.yml`.
+
+Bootstrap and organization audit must not require new consumers to use those compatibility-only controllers.
+
+## Direct runner contract
+
+Generated callers may read the non-secret Actions variable `PRODKIT_RUNNER_JSON`. Its value is the complete JSON value accepted by GitHub `runs-on`, for example:
+
+```json
+["self-hosted","Linux","X64"]
+```
+
+When unset, trusted generated workloads default to that self-hosted label set.
+
+Generated CI/Security callers force fork-originated pull requests to `"ubuntu-latest"`. Persistent trusted runners must not execute fork code by default.
+
+New callers must not contain:
+
+- `PRODKIT_RUNNER_MODE`;
+- a `runner` prerequisite job whose sole purpose is routing;
+- `needs.runner.outputs.runner_json`;
+- hosted availability probes or automatic failover state machines.
+
+A workload gets one runner target. Product/security/release failures never cause automatic execution on a second trust boundary.
 
 ## Lifecycle
 
-The standard lifecycle is deliberately separated:
+1. **Pull request** — CI, Security, optional CodeQL.
+2. **Main** — exact-main CI and Security certify the merge SHA.
+3. **Release candidate** — explicitly dispatch `Trusted Release Proof` on the intended current `main`; it certifies `${{ github.sha }}`.
+4. **Publication** — explicitly dispatch `Release` on the same current `main`; it publishes `${{ github.sha }}` after verifying prior exact-SHA evidence.
+5. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
 
-1. **Pull request** — run normal `CI`, `Security`, and optional `CodeQL` feedback.
-2. **Main branch** — run `CI`, `Security`, and optional `CodeQL` for the actual merge SHA.
-3. **Release candidate** — explicitly dispatch `Trusted Release Proof` once for the intended current-main SHA.
-4. **Publication** — explicitly dispatch `Release`; publication verifies prior exact-SHA evidence before building, attesting, tagging, and publishing.
-5. **Metadata repair** — reconcile mutable GitHub Release presentation separately from immutable source/payload identity.
-
-`Trusted Release Proof` must not be triggered by every pull request, ordinary main push, or `v*` tag. Tag creation must not rerun an already successful proof for the same source SHA.
-
-The release pipeline requires successful exact-SHA main-branch `CI` and `Security` plus one successful `workflow_dispatch` run of `Trusted Release Proof` for the same current-main SHA.
-
-## Runner policy
-
-`Reusable Runner Policy` is the only organization implementation of runner selection. Thin consumers request `policy`, `auto`, `github-hosted`, or `self-hosted` and consume its `runner_json` output.
-
-`PRODKIT_RUNNER_MODE` is a non-secret organization/repository Actions variable:
-
-- unset or `auto`: hosted-first automatic failover;
-- `github-hosted`: strict hosted execution;
-- `self-hosted`: strict trusted self-hosted execution.
-
-For `auto`, the policy performs a repository-code-free hosted availability probe. If it emits `available=true`, the hosted lane is selected; otherwise the trusted self-hosted lane is selected. Genuine product/test/security/release failures never trigger runner switching because routing completes before the workload starts.
-
-Fork-originated pull requests are forced to the hosted lane when `fork_safe` is enabled. Release operations are not fork-PR entry points and may set `fork_safe: false`.
-
-Consumers must not contain `runner-probe`, `needs.runner-probe`, `fromJSON(...)` runner-selection expressions, or hard-coded `["self-hosted","Linux","X64"]` labels. Those are control-plane implementation details.
-
-GitHub Actions has no native ordered `runs-on` fallback and cannot safely react to a job that remains indefinitely queued. Hosted-first fallback therefore covers failures where the hosted probe fails to produce its positive output; it does not bypass a complete Actions outage.
+Operators do not manually copy source/target SHAs between proof and release workflows.
 
 ## CI
 
-Generated consumers use `reusable-ci-compact.yml`. It owns checkout, adapter containment checks, toolchain provisioning, compatibility selection, PostgreSQL isolation, aggregate outcome evaluation, and the stable `CI Required` job.
+Generated consumers use `reusable-ci-compact.yml` by default. It owns checkout, adapter containment, toolchain provisioning, compatibility selection, PostgreSQL isolation, and final aggregate outcome evaluation.
 
-Available adapters are:
+Available adapters:
 
 - `ci-hygiene.sh`;
-- `ci-python.sh`, receiving `PRODKIT_PYTHON_VERSION`;
-- `ci-node.sh`, receiving `PRODKIT_NODE_VERSION`;
-- `ci-postgres.sh`, receiving isolated PostgreSQL connection variables;
+- `ci-python.sh` with `PRODKIT_PYTHON_VERSION`;
+- `ci-node.sh` with `PRODKIT_NODE_VERSION`;
+- `ci-postgres.sh` with isolated PostgreSQL connection variables;
 - `ci-container.sh`;
 - `ci-custom.sh`.
 
-Compact CI supports Python `3.12`, `3.13`, `3.14` and Node `20`, `22`, `24`; callers may select any non-empty subset. Duplicate or unsupported compact-version entries fail closed. Enabled compatibility dimensions execute as steps inside the single `CI Required` job. Enabled contract steps use `continue-on-error` only to collect all outcomes; the final verifier fails if any enabled setup or adapter step failed.
+Compact CI supports Python `3.12`, `3.13`, `3.14` and Node `20`, `22`, `24`. Duplicate or unsupported requested versions fail closed.
 
-`reusable-ci.yml` remains available as the expanded compatibility path. It provides independent jobs/matrices and the same stable `CI Required` gate. Existing immutable consumers remain valid until intentionally repinned. A consumer needing versions outside the compact supported set may explicitly continue using the expanded workflow rather than weakening or silently changing its matrix.
+Enabled dimensions run as steps inside one reusable job named `CI Required`. Intermediate steps may continue after failure only to collect more evidence; the final verifier fails if any enabled control failed.
 
-Disabled capabilities may be skipped. Any enabled capability must succeed for `CI Required` to pass in either execution mode.
+`reusable-ci.yml` is the deliberate expanded/parallel compatibility path.
 
 ## Security
 
-Generated consumers use `reusable-security-compact.yml`. It owns checkout, full-history Gitleaks, source SPDX 2.3 SBOM generation, dependency-audit adapters, container vulnerability scanning, custom security adapters, evidence artifacts, and aggregate outcome evaluation inside the single stable `Security Required` job.
+Generated consumers use `reusable-security-compact.yml` by default. It owns checkout, full-history Gitleaks, dependency-audit adapters, source SPDX SBOM, container vulnerability scan, custom security, evidence uploads, and final aggregate verification.
 
-Repository adapters are:
+Repository adapters:
 
 - `security-python.sh`;
 - `security-node.sh`;
 - `security-container-build.sh`;
 - `security-custom.sh`.
 
-A repository may provide a narrowly reviewed repository-contained Gitleaks configuration. Enabled adapter paths are containment-checked beneath `.prodkit/workflows/`. Required evidence-upload outcomes are included in the compact final gate, so `continue-on-error` on intermediate steps cannot make a failed enabled security control green.
+Enabled controls must all pass. `continue-on-error` on intermediate evidence stages does not make a failed required control green.
 
-`reusable-security.yml` remains the backward-compatible expanded path with independent jobs and the same stable `Security Required` gate.
+`reusable-security.yml` remains the expanded compatibility path.
 
-## Stable required-check identity
+## Stable required checks
 
-Both compact and expanded execution preserve the branch-protection contract:
+The required branch-protection identities are:
 
-- caller job `ci` + reusable job `CI Required` renders as `ci / CI Required`;
-- caller job `security` + reusable job `Security Required` renders as `security / Security Required`.
+- caller job `ci` + reusable job `CI Required` => `ci / CI Required`;
+- caller job `security` + reusable job `Security Required` => `security / Security Required`.
 
-Organization rulesets must require those aggregate checks rather than individual compatibility or scan steps. Switching a repository from expanded to compact execution therefore does not require a branch-protection rename.
+Do not require individual compatibility/scanning steps as branch-protection checks.
 
 ## CodeQL
 
-`reusable-codeql.yml` owns the language matrix, CodeQL initialization/analysis, SARIF evidence retention, and the `CodeQL Required` aggregator. Repositories may supply `.prodkit/workflows/codeql-check.sh` to enforce their SARIF policy.
+`reusable-codeql.yml` owns the language matrix, initialization/analysis, SARIF evidence, and `CodeQL Required` aggregation. A repository may provide `.prodkit/workflows/codeql-check.sh` for its SARIF acceptance policy.
 
-CodeQL is opt-in for repositories that require it. It is not implicitly added to every ProdKit repository.
+CodeQL is opt-in. Generated CodeQL callers do not execute fork PRs on persistent trusted runners.
 
 ## Trusted Release Proof
 
-`reusable-release-proof.yml` accepts an exact `source_sha`, requires that SHA to remain current `main`, checks out that exact commit, validates a repository-owned proof adapter beneath `.prodkit/workflows/`, runs it on the resolved trusted runner, verifies tracked source remained immutable, writes a canonical proof receipt, and uploads exact-SHA proof evidence.
+`reusable-release-proof.yml` accepts an exact `source_sha`, verifies it remains current configured `main`, checks out that exact source, provisions the requested baseline toolchains, validates the repository proof adapter, runs it, confirms tracked source remained immutable, and uploads a canonical proof receipt/evidence artifact.
 
-The repository adapter is normally `.prodkit/workflows/release-proof.sh`. Domain-specific browser, database, container, packaging, quality, or protocol acceptance belongs there; YAML orchestration and exact-source guarantees belong centrally.
+The generated caller supplies:
 
-The proof workflow itself is explicitly dispatched. A successful run on another SHA, pull-request event, ordinary main push, or tag event is not release-candidate evidence.
+```yaml
+source_sha: ${{ github.sha }}
+```
 
-## Release manifest and presentation
-
-`.prodkit/release.json` schema version 1 defines version sources, canonical notes, changelog heading, release build adapter, and Release name template. Unknown properties are rejected.
-
-The organization release-presentation contract follows the ProdKit Quality reference:
-
-- tag: `vX.Y.Z`;
-- GitHub Release name: `ProdKit <Repository Name> vX.Y.Z`;
-- canonical note begins `# vX.Y.Z — <milestone>`;
-- Release body is the complete canonical `docs/VX.Y.Z.md` document.
-
-Quality is a release-presentation reference, not a runner-policy consumer.
+The proof caller is `workflow_dispatch` only. A proof on another SHA/event does not satisfy publication.
 
 ## Publication
 
-`reusable-release-pipeline.yml` first verifies a successful dispatched `Trusted Release Proof` for the exact target SHA. It then delegates immutable publication to `reusable-release.yml`, which independently requires successful main `CI` and `Security` for exactly the same SHA.
+New generated Release callers call `reusable-release.yml` directly. They do not use `reusable-release-pipeline.yml`.
 
-Publication is dispatch-only. `target_sha` must be a full lowercase 40-character SHA and still equal current configured `main`.
+The caller performs the explicit exact-SHA `Trusted Release Proof` lookup before delegating to the publisher. The publisher independently requires successful exact-SHA `push` runs for `CI` and `Security`.
 
-The consumer `release-build.sh` owns product distributables only and writes at least one flat regular payload into `RELEASE_OUTPUT_DIR`. The central workflow owns source archives, repository SBOM, release metadata, `SHA256SUMS`, attestations, immutable tag/release transaction, and remote verification.
+The generated caller supplies:
 
-A release tag is immutable. An existing tag on another commit is a hard failure. Publication is retry-safe and draft-first. Every uploaded asset is read back and verified before publication; after publication the complete remote asset set and every checksum are independently verified again.
+```yaml
+target_sha: ${{ github.sha }}
+```
+
+The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds central source archive/SBOM/metadata/checksums/attestation, creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set.
+
+Tag movement is forbidden. An existing tag on another commit fails hard. A verified already-published release is treated idempotently.
+
+## Release manifest
+
+`.prodkit/release.json` schema version 1 defines version sources, canonical notes/changelog, release-build adapter, artifact directory, source-archive policy, and Release name template. Unknown properties are rejected.
+
+The visible organization contract is:
+
+- tag `vX.Y.Z`;
+- canonical GitHub Release title defined by the repository manifest;
+- canonical version document begins `# vX.Y.Z — <milestone>`;
+- GitHub Release body equals the canonical version document.
 
 ## Metadata repair
 
-`reusable-release-metadata-current.yml` selects either an explicit published version/source pair or the current workspace version/tag, then delegates to guarded `reusable-release-metadata.yml`.
+`reusable-release-metadata-current.yml` selects an explicit published version/source pair or the current workspace version/tag, then delegates to `reusable-release-metadata.yml`.
 
-Metadata repair uses current `main` only as the canonical presentation source. It requires the existing immutable tag to resolve exactly to the supplied historical `source_sha`, verifies the published `SHA256SUMS` and every payload, snapshots asset identity/publication flags, PATCHes only Release `name` and `body`, then re-verifies the tag, assets, checksums, draft/prerelease state, and canonical presentation.
+Repair verifies the immutable tag and complete published checksum set before changing mutable presentation. It may patch canonical Release `name` and `body`, then re-verifies tag, publication flags/timestamp where applicable, asset identity, digests, and payload checksums.
 
-When explicitly enabled, current-release metadata orchestration may also normalize every published SemVer Release name/body from canonical repository metadata while preserving tag, publication flags/timestamp, target commitish, and asset identity.
-
-Metadata repair cannot create or move tags, create a missing Release, rebuild/upload/delete/replace assets, alter checksums, or change draft/prerelease state.
+It cannot create/move tags, create a missing Release, rebuild/upload/delete/replace assets, alter checksums, or change draft/prerelease state.
 
 ## Bootstrap surface
 
-`bootstrap_consumer.py` installs thin callers for CI, Security, Trusted Release Proof, Release, and Release Metadata, plus the complete adapter catalog. `--include-codeql` additionally installs the CodeQL caller.
+`bootstrap_consumer.py` installs callers for:
 
-Generated CI and Security callers use the compact reusable workflows by default. Generated callers contain only lifecycle triggers, minimal repository capability configuration, a call to `Reusable Runner Policy`, and the appropriate reusable workflow call. Runner implementation details must remain absent.
+- CI;
+- Security;
+- Trusted Release Proof;
+- Release;
+- Release Metadata;
+- optionally CodeQL.
+
+Generated callers directly invoke the appropriate reusable workload and directly provide `runner_json`. CI/Security use compact workflows by default.
 
 ## Organization audit
 
-`scripts/audit_org.py` treats all five default lifecycle callers as required for migrated repositories and verifies the exact central workflow family at the requested immutable SHA:
+The organization auditor requires these workflow families at the requested immutable central SHA:
 
 - `ci.yml` -> `reusable-ci-compact.yml`;
 - `security.yml` -> `reusable-security-compact.yml`;
 - `trusted-release-proof.yml` -> `reusable-release-proof.yml`;
-- `release.yml` -> `reusable-release-pipeline.yml`;
+- `release.yml` -> `reusable-release.yml`;
 - `release-metadata.yml` -> `reusable-release-metadata-current.yml`.
 
-The audit also rejects floating central references and local publication implementation in `release.yml`.
+It also rejects floating references, retired runner-controller usage, manually copied release target semantics, missing proof gating, and local publication implementation in consumer `release.yml`.
+
+## Compatibility policy
+
+Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. New bootstrap output and current organization policy must use the direct-runner architecture.

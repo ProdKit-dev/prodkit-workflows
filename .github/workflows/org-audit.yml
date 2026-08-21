@@ -17,33 +17,19 @@ on:
         required: false
         default: prodkit-
         type: string
-      runner:
-        description: Runner override; policy uses PRODKIT_RUNNER_MODE
-        required: true
-        type: choice
-        default: policy
-        options: [policy, auto, github-hosted, self-hosted]
 
 permissions:
   contents: read
 
 jobs:
-  runner:
-    name: runner
-    uses: ./.github/workflows/reusable-runner-policy.yml
-    with:
-      mode: ${{ inputs.runner }}
-      fork_safe: false
-
   audit:
     name: audit
-    needs: runner
     uses: ./.github/workflows/reusable-org-audit.yml
     with:
       organization: ${{ inputs.organization }}
       workflows_repository: ProdKit-dev/prodkit-workflows
       required_sha: ${{ inputs.required_sha }}
       repository_prefix: ${{ inputs.repository_prefix }}
-      runner_json: ${{ needs.runner.outputs.runner_json }}
+      runner_json: '"ubuntu-latest"'
     secrets:
       org_audit_token: ${{ secrets.ORG_AUDIT_TOKEN }}

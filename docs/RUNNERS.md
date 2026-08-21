@@ -1,68 +1,66 @@
 # Runner Requirements
 
-ProdKit supports GitHub-hosted and trusted self-hosted runners through one runner-selection contract. Reusable workflows remain runner-agnostic through `runner_json`; thin callers decide which target to pass before GitHub routes the real CI, Security, Release, or Organization Audit workload.
+ProdKit reusable workloads are runner-agnostic through their `runner_json` input. The caller chooses the runner directly; runner selection is not a separate prerequisite workflow.
 
-## Policy variable
+## Default target
 
-Generated callers read the non-secret GitHub Actions configuration variable `PRODKIT_RUNNER_MODE` from the caller repository context.
+Generated trusted workloads default to:
 
-| `PRODKIT_RUNNER_MODE` | Automatic trusted events |
-| --- | --- |
-| `auto` | run a non-poisoning GitHub-hosted availability probe first; fall back to `["self-hosted","Linux","X64"]` when the probe does not emit `available=true` |
-| `github-hosted` | strict `ubuntu-latest`; no automatic self-hosted fallback |
-| `self-hosted` | strict `["self-hosted","Linux","X64"]` |
-| unset | same as `auto` |
-| any other value | fail safe to strict `ubuntu-latest` |
+```json
+["self-hosted","Linux","X64"]
+```
 
-The variable may be defined at organization level to control many repositories at once. A repository-level variable with the same name overrides the organization-level value, allowing an exceptional repository to choose a different runner policy.
+To use a different trusted target, set the non-secret Actions variable `PRODKIT_RUNNER_JSON` to a complete JSON value accepted by `runs-on`, for example:
 
-For CI and Security pull requests, fork-originated code is always forced to GitHub-hosted execution even when the configured policy is `auto` or `self-hosted`. This prevents organization/repository policy from routing untrusted fork code to a persistent runner.
+```json
+["self-hosted","Linux","X64","prodkit-ci"]
+```
 
-## Automatic hosted-first failover
+A GitHub-hosted target can be represented as:
 
-`auto` is implemented by the thin caller, not by an invalid multi-runner `runs-on` expression. Before invoking the reusable workflow, the caller schedules a minimal `Hosted runner availability` probe on `ubuntu-latest`. The probe does not checkout or execute repository code and is deliberately **non-poisoning**: its infrastructure failure is routing evidence, not a failed product/security/release gate.
+```json
+"ubuntu-latest"
+```
 
-- If the probe actually starts, its step writes `available=true` to a job output and the real reusable workflow runs on GitHub-hosted Ubuntu.
-- If GitHub cannot provision the hosted probe (including billing/account/startup failures such as jobs that fail before step 1), the output is absent and the caller invokes the same reusable workflow on `["self-hosted","Linux","X64"]`.
-- The probe uses `continue-on-error: true` so a hosted-infrastructure failure does not by itself poison the overall caller workflow result.
-- If the probe is skipped because an explicit runner mode was selected, the explicit mode is used unchanged.
-- If the workflow is cancelled, the real reusable workflow is not started.
+There is intentionally no `policy`, `auto`, hosted probe, resolver, or in-workflow failover in newly generated callers. GitHub Actions has no reliable ordered runner fallback, and a controller job adds queueing and failure state without guaranteeing recovery from an indefinitely queued runner.
 
-Because failover is decided **before product tests or release steps begin**, a genuine test, audit, migration, security, packaging, or publication failure never triggers a runner switch. This prevents infrastructure fallback from becoming a retry-until-green mechanism.
+## Fork safety
 
-The caller job names remain `ci`, `security`, `release`, and `audit`, so stable required checks such as `ci / CI Required` and `security / Security Required` do not change when failover is enabled.
+Generated CI and Security callers force fork-originated pull requests to `ubuntu-latest`, regardless of `PRODKIT_RUNNER_JSON`. Persistent trusted runners must not execute untrusted fork code by default.
 
-## Manual override
+CodeQL is skipped for fork PRs by the generated caller unless a repository deliberately provides a safe hosted integration.
 
-Generated `workflow_dispatch` callers expose:
+Release, Trusted Release Proof, Release Metadata, and Organization Audit are trusted operator workflows rather than fork-PR entry points.
 
-- `runner: policy` — use `PRODKIT_RUNNER_MODE`;
-- `runner: auto` — force hosted-first automatic failover for this trusted dispatch;
-- `runner: github-hosted` — force strict `ubuntu-latest` for this dispatch;
-- `runner: self-hosted` — force strict `["self-hosted","Linux","X64"]` for this dispatch.
+## Failure boundary
 
-Release is dispatch-only, so its default `runner: policy` applies the same selection before any release side effect. Organization Audit uses the same four-state runner input.
+Runner availability is an infrastructure concern outside the reusable workload. A workflow targets one runner class once. Product, test, security, migration, packaging, or publication failures never trigger a runner switch or automatic retry on a second trust boundary.
 
-## Failure boundary and limitations
-
-GitHub Actions does not provide an `OR` or ordered-fallback form of `runs-on`. A `runs-on` array means that a runner must match **all** labels in the array; it does not mean “try GitHub-hosted, then self-hosted.” ProdKit therefore implements failover as a pre-workload probe plus conditional routing.
-
-This covers hosted-runner failures where the probe fails to produce its positive availability output, including account/billing/startup failures like jobs that fail before step 1. It cannot bypass a complete GitHub Actions control-plane outage, because both hosted and self-hosted jobs still depend on GitHub for queueing and dispatch. A hosted job that remains indefinitely queued rather than reaching a state from which dependent jobs can proceed also cannot trigger in-workflow failover; operators may force `runner: self-hosted` or set `PRODKIT_RUNNER_MODE=self-hosted` for subsequent runs.
-
-There is intentionally no automatic self-hosted-to-hosted failover. An unavailable self-hosted runner can remain queued without producing a failure event that the same workflow can safely react to. Use strict `github-hosted` or `auto` when self-hosted availability is uncertain.
+If the configured self-hosted runner is unavailable, fix/restart that runner or intentionally change `PRODKIT_RUNNER_JSON` for subsequent runs. Do not build retry-until-green logic into release workflows.
 
 ## Concurrency
 
-CI and Security concurrency belongs to each thin caller, not the reusable workflow. That lets distinct calls to the same reusable contract coexist while a new run of the same caller/ref still cancels obsolete work. Release keeps its version-scoped non-cancelling lock because publication must never race.
+Consumer CI/Security workflows own their concurrency groups. On a single self-hosted runner, CI and Security may queue behind one another, but there is no additional runner-resolution job consuming a slot first.
 
-## Security boundary
-
-Never route untrusted public fork code to a persistent self-hosted runner. `prodkit-workflows` itself is public, so its caller expression forces fork-originated pull requests onto GitHub-hosted runners even if `PRODKIT_RUNNER_MODE=auto` or `self-hosted`.
-
-For private repositories, keep the same fail-closed rule unless the runner is intentionally ephemeral and isolated for untrusted code.
+Release uses a version-scoped non-cancelling concurrency lock so publication transactions cannot race.
 
 ## Self-hosted requirements
 
-Self-hosted runners used for CI/Security/Release should provide Git, Bash, Python 3, Docker Engine/CLI, and outbound HTTPS to GitHub plus required package registries. Release runners should be isolated from untrusted workloads. Keep the self-hosted GitHub Actions Runner at **v2.327.1 or newer**; current `actions/attest` Node 24 releases require at least that runner generation.
+Trusted self-hosted runners should provide:
 
-Avoid permanent host ports for test databases. The reusable PostgreSQL job binds a random localhost port and cleans its run-scoped container.
+- Git;
+- Bash;
+- Python 3;
+- Docker Engine/CLI where container, PostgreSQL, Trivy, SBOM, browser, or release adapters need it;
+- outbound HTTPS to GitHub and required registries;
+- enough disk space for package caches, container images, browser runtimes, and release artifacts.
+
+Keep release runners isolated from untrusted workloads. Avoid Docker commands that create root-owned files in bind-mounted repository workspaces. Containerized Python should use `PYTHONDONTWRITEBYTECODE=1` when bytecode would otherwise be written into a host-mounted source tree.
+
+Repository adapters are responsible for cleaning their own run-scoped containers/volumes/artifacts. Reusable workflows must not depend on a destructive pre-checkout workspace-cleanup controller.
+
+Keep the GitHub Actions Runner current enough for the pinned actions used by the control plane, especially Node-24-based attestation actions.
+
+## Backward compatibility
+
+`reusable-runner-policy.yml` remains available only so repositories already pinned to historical control-plane SHAs are not broken retroactively. New bootstrap output, normative documentation, organization audit rules, and control-plane self-callers do not use it.
