@@ -324,6 +324,16 @@ def main() -> None:
         name="Reusable Release Proof",
     )
 
+    release = (ROOT / ".github/workflows/reusable-release.yml").read_text()
+    require(
+        release,
+        (
+            "p.name.startswith('.')",
+            "consumer release payload must not use hidden asset names",
+        ),
+        name="Reusable Release",
+    )
+
     # Compatibility-only wrapper for already-pinned consumers.
     release_pipeline = (ROOT / ".github/workflows/reusable-release-pipeline.yml").read_text()
     require(
