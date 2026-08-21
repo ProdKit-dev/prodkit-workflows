@@ -1,0 +1,66 @@
+name: Ops Release Environment Fix
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ops-release-environment-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fix:
+    if: ${{ github.event.pull_request.head.ref == 'fix/release-environments-without-deployments' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/release-environments-without-deployments
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Correct metadata caller and validate exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_MAIN=717d171becc4438aa2574b332b37f5c52b1076cd
+          git fetch origin main --force
+          test "$(git rev-parse origin/main)" = "$EXPECTED_MAIN"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/reusable-release-metadata-current.yml')
+          text = path.read_text(encoding='utf-8')
+          expression = '$' + '{{ inputs.environment }}'
+          broken = f'      environment:\n      name: {expression}\n      deployment: false\n'
+          fixed = f'      environment: {expression}\n'
+          if text.count(broken) != 1:
+              raise SystemExit('expected exactly one malformed reusable-workflow environment input')
+          text = text.replace(broken, fixed, 1)
+          if text.count('      deployment: false\n') != 1:
+              raise SystemExit('expected exactly one remaining non-deployment job marker')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          rm -- .github/workflows/ops-release-environment-fix.yml
+          bash .prodkit/workflows/ci-hygiene.sh
+          python3 scripts/test_contracts_current.py
+          python3 scripts/test_release_metadata_compat.py
+          python3 scripts/test_release_lifecycle.py
+          git diff --check
+
+          git add -- \
+            .github/workflows/reusable-release-metadata-current.yml \
+            .github/workflows/ops-release-environment-fix.yml
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(release): preserve metadata workflow-call environment input'
+          echo "CANDIDATE_SHA=$(git rev-parse HEAD)"
+          echo "CANDIDATE_TREE=$(git rev-parse HEAD^{tree})"
+          git push origin HEAD:fix/release-environments-without-deployments
