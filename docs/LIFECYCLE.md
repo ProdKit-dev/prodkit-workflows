@@ -50,7 +50,9 @@ Compatibility and scanning dimensions execute as steps, and the final aggregate 
 
 The reusable proof checks that this SHA is still current `main`, executes the repository-owned `.prodkit/workflows/release-proof.sh`, proves the tracked source remained unchanged, and uploads proof evidence.
 
-After proof succeeds, the generated caller invokes `reusable-release-promote.yml`. Promotion rechecks current-main identity, derives one consistent SemVer from `.prodkit/release.json`, reuses any valid existing Release run/publication, otherwise dispatches the repository Release workflow, and exits immediately without waiting.
+After proof succeeds, the generated caller invokes `reusable-release-promote.yml`. Promotion rechecks current-main identity, derives one consistent SemVer from `.prodkit/release.json`, avoids a duplicate dispatch only while an exact-source Release run is actively queued/running, otherwise dispatches the repository Release workflow, and exits immediately without waiting.
+
+An existing tag or GitHub Release is not closure evidence by itself. If the tag already resolves to the proven SHA, promotion still re-dispatches the idempotent Release workflow so its full payload/checksum/post-publication verification executes again. This closes partial-publication recovery cases where a prior run became public before failing a later verification step.
 
 Proof does not run on every pull-request commit, ordinary main push, or tag event.
 
