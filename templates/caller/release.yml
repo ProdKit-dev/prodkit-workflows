@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 10
     env:
       TARGET_SHA: ${{ github.sha }}
-      PROOF_WORKFLOW: Trusted Release Proof
+      PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Verify exact current main and successful proof
@@ -48,7 +48,7 @@ jobs:
           if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
               raise SystemExit("target SHA must be an exact lowercase 40-character commit SHA")
           repo = os.environ["GITHUB_REPOSITORY"]
-          workflow = os.environ["PROOF_WORKFLOW"]
+          workflow_file = os.environ["PROOF_WORKFLOW_FILE"]
           token = os.environ["GH_TOKEN"]
           params = urllib.parse.urlencode(
               {"head_sha": sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}
@@ -67,7 +67,7 @@ jobs:
           matches = [
               run
               for run in runs
-              if run.get("name") == workflow
+              if run.get("path") == workflow_file
               and run.get("head_sha") == sha
               and run.get("event") == "workflow_dispatch"
               and run.get("status") == "completed"
@@ -75,7 +75,7 @@ jobs:
           ]
           if not matches:
               raise SystemExit(
-                  f"missing successful workflow_dispatch {workflow!r} proof for exact SHA {sha}"
+                  f"missing successful workflow_dispatch proof from {workflow_file!r} for exact SHA {sha}"
               )
           print(f"release-candidate proof: {matches[0].get('html_url')}")
           PY
