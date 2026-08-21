@@ -1,0 +1,250 @@
+name: Reusable Release Verification
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact source SHA published by the completed Release workflow.
+        required: true
+        type: string
+      runner_json:
+        description: JSON value accepted by runs-on.
+        required: true
+        type: string
+      manifest_path:
+        required: false
+        type: string
+        default: .prodkit/release.json
+      release_workflow_file:
+        required: false
+        type: string
+        default: release.yml
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-verification-${{ inputs.source_sha }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify immutable publication
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 15
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      MANIFEST_PATH: ${{ inputs.manifest_path }}
+      RELEASE_WORKFLOW_FILE: ${{ inputs.release_workflow_file }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify tag, metadata, assets, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import tomllib
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from typing import Any
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          repository_name = repo.split("/", 1)[-1]
+          token = os.environ["GH_TOKEN"]
+          source_sha = os.environ["SOURCE_SHA"]
+          manifest_path = os.environ["MANIFEST_PATH"]
+          release_workflow_file = os.environ["RELEASE_WORKFLOW_FILE"]
+          root = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-release-verification",
+          }
+          semver = re.compile(
+              r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+              r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
+          )
+
+          def api(path: str, *, accept: str | None = None) -> Any:
+              request = urllib.request.Request(
+                  root + path,
+                  headers={**headers, **({"Accept": accept} if accept else {})},
+              )
+              with urllib.request.urlopen(request, timeout=300) as response:
+                  raw = response.read()
+                  if accept == "application/octet-stream":
+                      return raw
+                  return None if not raw else json.loads(raw)
+
+          def source_bytes(path: str) -> bytes:
+              candidate = pathlib.PurePosixPath(path)
+              if candidate.is_absolute() or ".." in candidate.parts or str(candidate) in {"", "."}:
+                  raise SystemExit(f"unsafe repository path: {path!r}")
+              quoted = urllib.parse.quote(str(candidate), safe="/")
+              item = api(f"/contents/{quoted}?ref={urllib.parse.quote(source_sha, safe='')}")
+              if item.get("type") != "file" or item.get("encoding") != "base64":
+                  raise SystemExit(f"source path is not a base64 file: {path}")
+              return base64.b64decode(item["content"])
+
+          def dotted(value: Any, selector: str) -> Any:
+              current = value
+              for part in selector.split("."):
+                  if not isinstance(current, dict) or part not in current:
+                      raise SystemExit(f"selector {selector!r} is missing {part!r}")
+                  current = current[part]
+              return current
+
+          if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+              raise SystemExit("source_sha must be an exact lowercase commit SHA")
+          if not re.fullmatch(r"[A-Za-z0-9._-]+\.ya?ml", release_workflow_file):
+              raise SystemExit("release_workflow_file must be a workflow filename")
+
+          manifest = json.loads(source_bytes(manifest_path))
+          if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+              raise SystemExit("release manifest schema_version must be 1")
+          version_block = manifest.get("version")
+          sources = version_block.get("sources") if isinstance(version_block, dict) else None
+          if not isinstance(sources, list) or not sources:
+              raise SystemExit("release manifest requires version.sources")
+          versions: list[str] = []
+          for index, source in enumerate(sources):
+              if not isinstance(source, dict):
+                  raise SystemExit(f"version.sources[{index}] must be an object")
+              typ = source.get("type")
+              path = source.get("path")
+              selector = source.get("selector")
+              if typ not in {"text", "json", "toml"} or not isinstance(path, str) or not path:
+                  raise SystemExit(f"invalid version source at index {index}")
+              raw = source_bytes(path)
+              if typ == "text":
+                  value: Any = raw.decode().strip()
+              elif typ == "json":
+                  value = dotted(json.loads(raw), selector or "version")
+              else:
+                  value = dotted(tomllib.loads(raw.decode()), selector or "project.version")
+              versions.append(str(value))
+          if len(set(versions)) != 1 or not semver.fullmatch(versions[0]):
+              raise SystemExit(f"release version sources disagree or are invalid: {versions}")
+          version = versions[0]
+          tag = f"v{version}"
+
+          notes_block = manifest.get("notes")
+          if not isinstance(notes_block, dict):
+              raise SystemExit("release manifest notes block is missing")
+          template = notes_block.get("path_template")
+          if not isinstance(template, str) or not template:
+              raise SystemExit("release manifest notes.path_template is invalid")
+          notes_path = template.format(version=version, tag=tag)
+
+          release_block = manifest.get("release", {})
+          if not isinstance(release_block, dict):
+              raise SystemExit("release manifest release block must be an object")
+          name_template = release_block.get("name_template", "{repository} {tag}")
+          if not isinstance(name_template, str) or not name_template:
+              raise SystemExit("release manifest release.name_template is invalid")
+          expected_name = name_template.format(
+              repository=repository_name,
+              version=version,
+              tag=tag,
+          )
+
+          ref = api(f"/git/ref/tags/{urllib.parse.quote(tag, safe='')}")
+          obj = ref["object"]
+          seen: set[str] = set()
+          while obj.get("type") == "tag":
+              sha = str(obj["sha"])
+              if sha in seen:
+                  raise SystemExit("tag object cycle detected")
+              seen.add(sha)
+              obj = api(f"/git/tags/{sha}")["object"]
+          if obj.get("type") != "commit" or obj.get("sha") != source_sha:
+              raise SystemExit(f"immutable tag {tag} does not resolve to {source_sha}")
+
+          release = api(f"/releases/tags/{urllib.parse.quote(tag, safe='')}")
+          expected_prerelease = "-" in version.split("+", 1)[0]
+          if release.get("draft") is not False:
+              raise SystemExit("GitHub Release is still a draft")
+          if bool(release.get("prerelease")) != expected_prerelease:
+              raise SystemExit("GitHub Release prerelease state disagrees with SemVer")
+          if release.get("name") != expected_name:
+              raise SystemExit(f"release name mismatch: {release.get('name')!r} != {expected_name!r}")
+          if str(release.get("target_commitish")) != source_sha:
+              raise SystemExit("GitHub Release target_commitish is not the exact source SHA")
+          expected_body = source_bytes(notes_path).decode().rstrip("\n")
+          if str(release.get("body") or "").rstrip("\n") != expected_body:
+              raise SystemExit("GitHub Release body does not match canonical release notes")
+
+          query = urllib.parse.urlencode(
+              {"head_sha": source_sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}
+          )
+          runs = list(api(f"/actions/runs?{query}").get("workflow_runs", []))
+          expected_path = f".github/workflows/{release_workflow_file}"
+          successful_release_runs = [
+              run
+              for run in runs
+              if run.get("path") == expected_path
+              and run.get("head_sha") == source_sha
+              and run.get("event") == "workflow_dispatch"
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+          ]
+          if not successful_release_runs:
+              raise SystemExit("missing successful exact-source Release workflow run")
+
+          assets = {str(asset["name"]): asset for asset in release.get("assets", [])}
+          sums_asset = assets.get("SHA256SUMS")
+          if sums_asset is None:
+              raise SystemExit("published Release is missing SHA256SUMS")
+          sums_raw = api(str(sums_asset["url"]).removeprefix(root), accept="application/octet-stream")
+          expected: dict[str, str] = {}
+          for line in sums_raw.decode().splitlines():
+              if not line.strip():
+                  continue
+              digest, name = line.split(None, 1)
+              name = name.lstrip("*")
+              if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  raise SystemExit(f"invalid SHA256SUMS digest for {name}")
+              if name in expected:
+                  raise SystemExit(f"duplicate SHA256SUMS entry: {name}")
+              expected[name] = digest
+          if set(assets) != set(expected) | {"SHA256SUMS"}:
+              raise SystemExit(
+                  f"published asset set mismatch: remote={sorted(assets)} sums={sorted(expected)}"
+              )
+
+          for name, digest in expected.items():
+              asset = assets[name]
+              api_digest = asset.get("digest")
+              if api_digest:
+                  if api_digest != f"sha256:{digest}":
+                      raise SystemExit(f"GitHub asset digest mismatch: {name}")
+              else:
+                  raw = api(str(asset["url"]).removeprefix(root), accept="application/octet-stream")
+                  if hashlib.sha256(raw).hexdigest() != digest:
+                      raise SystemExit(f"published checksum mismatch: {name}")
+
+          print(
+              json.dumps(
+                  {
+                      "status": "verified",
+                      "source_sha": source_sha,
+                      "tag": tag,
+                      "release_id": int(release["id"]),
+                      "release_run_id": int(max(successful_release_runs, key=lambda run: int(run["id"]))["id"]),
+                      "asset_count": len(assets),
+                  },
+                  sort_keys=True,
+              )
+          )
+          PY

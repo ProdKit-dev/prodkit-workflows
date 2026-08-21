@@ -11,8 +11,23 @@ permissions:
 jobs:
   proof:
     name: proof
+    permissions:
+      contents: read
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-proof.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
       source_sha: ${{ github.sha }}
       runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
       proof_script: .prodkit/workflows/release-proof.sh
+
+  promote:
+    name: promote
+    needs: proof
+    permissions:
+      actions: write
+      contents: read
+    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+    with:
+      source_sha: ${{ github.sha }}
+      runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+      manifest_path: .prodkit/release.json
+      release_workflow_file: release.yml
