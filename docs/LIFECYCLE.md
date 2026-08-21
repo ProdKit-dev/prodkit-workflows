@@ -57,4 +57,4 @@ It cannot move/create tags, rebuild or replace assets, change checksums, or chan
 
 `reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain available for older immutable consumers. They are not part of the generated default lifecycle after the direct-runner architecture became normative.
 
-ProdKit Quality remains a release-presentation reference, not a runner-controller dependency.
+Quality is a release-presentation reference, not a runner-controller dependency.
