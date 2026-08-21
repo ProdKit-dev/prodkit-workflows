@@ -1,0 +1,112 @@
+name: Apply Direct Release Fix
+
+on:
+  push:
+    branches: [fix/direct-release-proof-and-pnpm]
+    paths: [apply-direct-release-fix-command.json]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Stage and patch release contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, urllib.error, urllib.parse, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; branch='fix/direct-release-proof-and-pnpm'; token=os.environ['GH_TOKEN']
+          H={'Accept':'application/vnd.github+json','Authorization':f'Bearer {token}','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json','User-Agent':'prodkit-workflows-direct-release-fix'}
+          def api(method,path,payload=None,allow_404=False):
+              data=None if payload is None else json.dumps(payload).encode()
+              req=urllib.request.Request('https://api.github.com'+path,data=data,headers=H,method=method)
+              try:
+                  with urllib.request.urlopen(req,timeout=60) as r:
+                      raw=r.read(); return None if not raw else json.loads(raw)
+              except urllib.error.HTTPError as e:
+                  if allow_404 and e.code==404: return None
+                  body=e.read().decode(errors='replace'); raise RuntimeError(f'{method} {path} failed: {e.code} {body}') from e
+          def read(path):
+              ref=urllib.parse.quote(branch,safe='')
+              obj=api('GET',f'/repos/{repo}/contents/{path}?ref={ref}')
+              return obj, base64.b64decode(obj['content']).decode()
+          def put(path,text,message):
+              ref=urllib.parse.quote(branch,safe='')
+              cur=api('GET',f'/repos/{repo}/contents/{path}?ref={ref}',allow_404=True)
+              payload={'message':message,'content':base64.b64encode(text.encode()).decode(),'branch':branch}
+              if cur: payload['sha']=cur['sha']
+              return api('PUT',f'/repos/{repo}/contents/{path}',payload)
+          def patch(path,old,new,message):
+              obj,text=read(path)
+              if new in text: return obj['sha']
+              if old not in text: raise RuntimeError(f'expected patch anchor missing in {path}')
+              response=put(path,text.replace(old,new,1),message)
+              return response['content']['sha']
+
+          # Stage the reusable workflow because Actions GITHUB_TOKEN cannot modify
+          # files under .github/workflows directly.
+          _, workflow = read('.github/workflows/reusable-release.yml')
+          old='''      - name: Provision release pnpm\n        if: steps.preflight.outputs.published != 'true' && inputs.node_enabled\n        shell: bash\n        run: npm install --global "pnpm@${{ inputs.pnpm_version }}"\n'''
+          new='''      - name: Provision release pnpm\n        if: steps.preflight.outputs.published != 'true' && inputs.node_enabled\n        shell: bash\n        run: |\n          set -euo pipefail\n          corepack enable\n          corepack prepare "pnpm@${{ inputs.pnpm_version }}" --activate\n          test "$(pnpm --version)" = "${{ inputs.pnpm_version }}"\n'''
+          if new not in workflow:
+              if old not in workflow: raise RuntimeError('expected reusable release pnpm anchor missing')
+              workflow=workflow.replace(old,new,1)
+          staged=put('staged-reusable-release.yml',workflow,'chore: stage idempotent release pnpm workflow')
+          staged_sha=staged['content']['sha']
+
+          _, template=read('templates/caller/release.yml')
+          replacements=[
+            ('      PROOF_WORKFLOW: Trusted Release Proof\n','      PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml\n'),
+            ('          workflow = os.environ["PROOF_WORKFLOW"]\n','          workflow_file = os.environ["PROOF_WORKFLOW_FILE"]\n'),
+            ('              if run.get("name") == workflow\n','              if run.get("path") == workflow_file\n'),
+            ('                  f"missing successful workflow_dispatch {workflow!r} proof for exact SHA {sha}"\n','                  f"missing successful workflow_dispatch proof from {workflow_file!r} for exact SHA {sha}"\n'),
+          ]
+          for old_s,new_s in replacements:
+              if new_s not in template:
+                  if old_s not in template: raise RuntimeError(f'expected release template anchor missing: {old_s!r}')
+                  template=template.replace(old_s,new_s,1)
+          put('templates/caller/release.yml',template,'fix(release): identify proof by workflow file')
+
+          _, audit=read('scripts/audit_org.py')
+          old='''                if "PROOF_WORKFLOW: Trusted Release Proof" not in text:\n                    errors.append("release.yml must gate on Trusted Release Proof")\n'''
+          new='''                if "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml" not in text:\n                    errors.append("release.yml must gate on the Trusted Release Proof workflow file")\n'''
+          if new not in audit:
+              if old not in audit: raise RuntimeError('audit proof identity anchor missing')
+              audit=audit.replace(old,new,1)
+          put('scripts/audit_org.py',audit,'fix(audit): require proof workflow-file identity')
+
+          _, tests=read('scripts/test_contracts.py')
+          old='''        if "PROOF_WORKFLOW: Trusted Release Proof" not in release:\n            raise SystemExit("bootstrap Release caller must gate on Trusted Release Proof")\n'''
+          new='''        if "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml" not in release:\n            raise SystemExit("bootstrap Release caller must gate on Trusted Release Proof by workflow file")\n        if 'run.get("path") == workflow_file' not in release:\n            raise SystemExit("bootstrap Release proof lookup must use workflow file identity")\n'''
+          if new not in tests:
+              if old not in tests: raise RuntimeError('bootstrap proof test anchor missing')
+              tests=tests.replace(old,new,1)
+          old2='''            "consumer release payload must not use hidden asset names",\n        ),\n        name="Reusable Release",\n    )\n'''
+          new2='''            "consumer release payload must not use hidden asset names",\n            "corepack prepare",\n            "test \"$(pnpm --version)\"",\n        ),\n        name="Reusable Release",\n    )\n    if 'npm install --global "pnpm@' in release:\n        raise SystemExit("Reusable Release must not use global npm pnpm installation on persistent runners")\n'''
+          if new2 not in tests:
+              if old2 not in tests: raise RuntimeError('reusable release test anchor missing')
+              tests=tests.replace(old2,new2,1)
+          old3='''            "PROOF_WORKFLOW: Trusted Release Proof",\n'''
+          new3='''            "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml",\n'''
+          if new3 not in tests:
+              if old3 not in tests: raise RuntimeError('audit contract test anchor missing')
+              tests=tests.replace(old3,new3,1)
+          put('scripts/test_contracts.py',tests,'test(release): lock workflow-file proof and Corepack contracts')
+
+          _, docs=read('docs/CONTRACTS.md')
+          anchor='''The caller performs the explicit exact-SHA `Trusted Release Proof` lookup before delegating to the publisher. The publisher independently requires successful exact-SHA `push` runs for `CI` and `Security`.\n'''
+          replacement='''The caller performs the explicit exact-SHA `Trusted Release Proof` lookup by authoritative workflow-file identity before delegating to the publisher; dynamic `run-name` text is never an authorization identity. The publisher independently requires successful exact-SHA `push` runs for `CI` and `Security`. Release and proof pnpm provisioning both use Corepack so persistent self-hosted runners are idempotent and do not accumulate conflicting global pnpm shims.\n'''
+          if replacement not in docs:
+              if anchor not in docs: raise RuntimeError('contracts documentation anchor missing')
+              docs=docs.replace(anchor,replacement,1)
+          put('docs/CONTRACTS.md',docs,'docs(release): define proof identity and pnpm idempotence')
+
+          result={'state':'success','branch':branch,'staged_workflow_blob_sha':staged_sha,'fixes':['proof workflow-file identity','idempotent Corepack release pnpm','audit and contract regression coverage']}
+          put('direct-release-fix-result.json',json.dumps(result,indent=2)+'\n','chore: record direct release fix result')
+          PY
