@@ -52,12 +52,13 @@ jobs:
                   raise SystemExit(f'{path}: deployment:false marker missing')
           PY
 
+          # Evaluate exactly the candidate tree, not the temporary operator tree.
+          rm -- .github/workflows/ops-release-environment-fix.yml
           python3 scripts/test_contracts_current.py
           python3 scripts/test_release_metadata_compat.py
           python3 scripts/test_release_lifecycle.py
           git diff --check
 
-          rm -- .github/workflows/ops-release-environment-fix.yml
           git add -- \
             .github/workflows/reusable-release.yml \
             .github/workflows/reusable-release-metadata.yml \
