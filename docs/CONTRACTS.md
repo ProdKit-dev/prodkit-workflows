@@ -135,7 +135,7 @@ The proof caller is `workflow_dispatch` only. A proof on another SHA/event does 
 
 New generated Release callers call `reusable-release.yml` directly. They do not use `reusable-release-pipeline.yml`.
 
-The caller performs the explicit exact-SHA `Trusted Release Proof` lookup before delegating to the publisher. The publisher independently requires successful exact-SHA `push` runs for `CI` and `Security`.
+The caller performs the explicit exact-SHA `Trusted Release Proof` lookup by authoritative workflow-file identity before delegating to the publisher; dynamic `run-name` text is never an authorization identity. The publisher independently requires successful exact-SHA `push` runs for `CI` and `Security`. Release and proof pnpm provisioning both use Corepack so persistent self-hosted runners are idempotent and do not accumulate conflicting global pnpm shims.
 
 The generated caller supplies:
 

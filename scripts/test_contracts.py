@@ -187,8 +187,10 @@ def test_bootstrap() -> None:
             raise SystemExit("bootstrap Release caller must use the guarded publisher directly")
         if "target_sha: ${{ github.sha }}" not in release:
             raise SystemExit("bootstrap Release caller must publish dispatched current main")
-        if "PROOF_WORKFLOW: Trusted Release Proof" not in release:
-            raise SystemExit("bootstrap Release caller must gate on Trusted Release Proof")
+        if "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml" not in release:
+            raise SystemExit("bootstrap Release caller must gate on Trusted Release Proof by workflow file")
+        if 'run.get("path") == workflow_file' not in release:
+            raise SystemExit("bootstrap Release proof lookup must use workflow file identity")
         if "reusable-release-metadata-current.yml@" not in metadata:
             raise SystemExit("bootstrap metadata caller must use current release metadata workflow")
 
@@ -330,9 +332,13 @@ def main() -> None:
         (
             "p.name.startswith('.')",
             "consumer release payload must not use hidden asset names",
+            "corepack prepare",
+            "test \"$(pnpm --version)\"",
         ),
         name="Reusable Release",
     )
+    if 'npm install --global "pnpm@' in release:
+        raise SystemExit("Reusable Release must not use global npm pnpm installation on persistent runners")
 
     # Compatibility-only wrapper for already-pinned consumers.
     release_pipeline = (ROOT / ".github/workflows/reusable-release-pipeline.yml").read_text()
@@ -393,7 +399,7 @@ def main() -> None:
             '"release.yml": "reusable-release.yml"',
             "retired runner-controller orchestration",
             'target_sha: ${{ github.sha }}',
-            "PROOF_WORKFLOW: Trusted Release Proof",
+            "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml",
         ),
         name="Organization Audit",
     )

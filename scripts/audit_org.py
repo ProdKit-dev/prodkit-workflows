@@ -119,8 +119,8 @@ def main():
             if filename == "release.yml":
                 if "target_sha: ${{ github.sha }}" not in text:
                     errors.append("release.yml must publish the dispatched current-main SHA")
-                if "PROOF_WORKFLOW: Trusted Release Proof" not in text:
-                    errors.append("release.yml must gate on Trusted Release Proof")
+                if "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml" not in text:
+                    errors.append("release.yml must gate on the Trusted Release Proof workflow file")
                 for pattern in direct_release_patterns:
                     if re.search(pattern, text, re.I):
                         errors.append(

@@ -318,7 +318,11 @@ jobs:
       - name: Provision release pnpm
         if: steps.preflight.outputs.published != 'true' && inputs.node_enabled
         shell: bash
-        run: npm install --global "pnpm@${{ inputs.pnpm_version }}"
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare "pnpm@${{ inputs.pnpm_version }}" --activate
+          test "$(pnpm --version)" = "${{ inputs.pnpm_version }}"
 
       - name: Run release build contract
         if: steps.preflight.outputs.published != 'true'
