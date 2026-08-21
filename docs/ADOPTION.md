@@ -1,12 +1,12 @@
 # Adoption Guide
 
-## 1. Publish the control plane
+## 1. Validate the control plane
 
-Create `ProdKit-dev/prodkit-workflows`, push this repository, protect `main`, and run CI/Security once. Create a protected `release` environment for the release workflow.
+Protect `ProdKit-dev/prodkit-workflows/main` and require its CI/Security checks. Maintain a protected `release` environment for publication workflows that use it.
 
-## 2. Pin the workflow implementation
+## 2. Pin one reviewed revision
 
-Choose the exact commit SHA of the reviewed `prodkit-workflows` revision. Do not use `@main`, `@v0`, or another movable reference.
+Consumers must call reusable workflows at an exact 40-character commit SHA. Do not use `@main`, `@v0`, or another movable ref.
 
 ## 3. Generate a consumer integration
 
@@ -17,42 +17,66 @@ python3 scripts/bootstrap_consumer.py \
   --destination ../consumer
 ```
 
-Edit the generated adapters and disable unused capabilities in caller workflows. If a repository does not have both `package.json` and `pyproject.toml`, remove the irrelevant version source from `.prodkit/release.json`.
+Edit repository-owned adapters and disable unused capabilities. Keep release metadata in `.prodkit/release.json` aligned with the repository’s actual version sources and release notes.
 
-Generated callers support GitHub-hosted execution, trusted self-hosted execution, and hosted-first automatic failover. Configure the non-secret GitHub Actions variable `PRODKIT_RUNNER_MODE` at organization or repository level:
+## 4. Configure the runner directly
 
-- `auto` → run a non-poisoning `ubuntu-latest` availability probe; if it does not emit `available=true`, route the real trusted workload to `["self-hosted","Linux","X64"]`;
-- `github-hosted` → strict `ubuntu-latest`;
-- `self-hosted` → strict `["self-hosted","Linux","X64"]`;
-- unset → same as `auto`;
-- unknown non-empty value → strict GitHub-hosted fail-safe.
+New generated callers do not invoke a runner-selection controller.
 
-Repository-level configuration overrides organization-level configuration. Manual `workflow_dispatch` exposes `runner: policy | auto | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE` and explicit choices override it for that dispatch.
+Trusted work defaults to:
 
-Fork-originated pull requests are always routed to GitHub-hosted runners and never participate in self-hosted fallback. The hosted probe does not checkout or execute repository code, uses `continue-on-error: true`, and writes `available=true` only if its step actually runs. Its infrastructure failure is therefore routing evidence rather than a failed product gate. Failover is decided before the real reusable workflow begins, so a test/security/release failure never triggers retry on another runner. See `docs/RUNNERS.md` for the exact limitations, including indefinitely queued hosted jobs and the absence of automatic self-hosted-to-hosted fallback.
+```json
+["self-hosted","Linux","X64"]
+```
 
-## 4. Stabilize required status names
+If a repository needs another trusted target, set the non-secret Actions variable `PRODKIT_RUNNER_JSON` to the complete JSON value accepted by `runs-on`.
 
-The supplied caller jobs remain named `ci` and `security` even when automatic failover is enabled. GitHub therefore exposes the final reusable checks as `ci / CI Required` and `security / Security Required`. Run both workflows once before configuring them as required checks.
+Fork-originated CI/Security pull requests remain forced to `ubuntu-latest`; do not remove that guard for persistent runners.
 
-## 5. Apply organization rulesets safely
+There is no automatic runner failover in the normative architecture. If a runner is unavailable, repair it or deliberately change the direct runner target for subsequent runs. See `docs/RUNNERS.md`.
 
-Import `rulesets/org-main.json` and `rulesets/org-release-tags.json` at the organization level. The shipped recipes are intentionally **disabled by default** even though their repository condition is `~ALL`.
+## 5. Stabilize required checks
 
-Before activation:
+Run CI and Security once and confirm GitHub exposes:
 
-1. change repository targeting from `~ALL` to only the repositories that have completed migration;
-2. verify `ci / CI Required` and `security / Security Required` already exist on those repositories;
-3. review bypass actors, approval count, and status-check sources;
-4. activate the ruleset only after that review;
-5. expand the repository target set incrementally as additional repositories migrate.
+- `ci / CI Required`
+- `security / Security Required`
 
-Do not activate the `~ALL` condition while unmigrated repositories still depend on local workflow names.
+Configure organization/repository rulesets to require those aggregate checks.
 
-## 6. Migrate releases
+## 6. Apply rulesets incrementally
 
-Replace old release implementations only after the new CI/Security push runs are permanent on `main`. Preserve historical tags/releases. Do not rewrite old release commits. New releases use exactly one publication path: `workflow_dispatch(version, target_sha)`. Under `auto`, runner failover is settled before any guarded release step starts.
+The shipped organization ruleset recipes are disabled by default. Before activation:
 
-## 7. Audit drift
+1. target only repositories that have completed migration;
+2. verify the required check names already exist;
+3. review bypass actors, approvals, and status-check sources;
+4. enable rulesets only after validation;
+5. expand repository scope gradually.
 
-Configure a fine-grained PAT or GitHub App token with read access to the organization repositories as `ORG_AUDIT_TOKEN` in the control-plane repository, then run `Organization Audit`. The auditor fails on floating pins, missing wrappers, local release implementation patterns, or obsolete central SHAs.
+## 7. Migrate release proof/publication
+
+Preserve historical tags/releases. Do not rewrite old release commits.
+
+For a new release:
+
+1. merge the release candidate to `main`;
+2. wait for exact-main CI and Security to pass;
+3. dispatch `Trusted Release Proof` on `main` — the proof source is automatically `${{ github.sha }}`;
+4. after proof succeeds, dispatch `Release` on the same `main` revision with the semantic version;
+5. Release automatically uses `${{ github.sha }}` as the target and verifies exact-SHA CI, Security, and proof evidence before any tag/publication transaction.
+
+Operators should not manually copy commit SHAs between these workflows.
+
+## 8. Audit drift
+
+Configure `ORG_AUDIT_TOKEN` with read access to the target repositories and run Organization Audit. The auditor rejects:
+
+- missing lifecycle callers;
+- floating central refs;
+- obsolete central SHAs;
+- retired runner-controller usage;
+- the retired nested Release pipeline as the generated release contract;
+- local publication implementations in consumer `release.yml`.
+
+`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain available only for consumers already pinned to historical revisions; do not generate new integrations from them.
