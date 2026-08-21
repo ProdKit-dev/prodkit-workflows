@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       mode:
-        description: Runner mode: policy, auto, github-hosted, or self-hosted.
+        description: "Runner mode: policy, auto, github-hosted, or self-hosted."
         required: false
         type: string
         default: policy
