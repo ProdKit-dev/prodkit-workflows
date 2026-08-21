@@ -1,52 +1,60 @@
 # ProdKit workflow lifecycle
 
-`prodkit-workflows` is the organization workflow control plane. Consumer repositories own product-specific adapters and release manifests; they do not own runner-routing expressions, matrix aggregation, release publication state machines, or mutable GitHub Release repair logic.
+`prodkit-workflows` centralizes reusable workload implementation. Consumer repositories retain thin lifecycle callers, choose their runner directly, and own product-specific adapters/release metadata.
 
 ## Lifecycle
 
 | Stage | Trigger | Required purpose | Normal evidence |
 | --- | --- | --- | --- |
-| Pull request | `pull_request` | Fast correctness and security feedback before merge | `CI`, `Security`, optional `CodeQL` |
-| Main branch | `push` to `main` | Certify the actual merge SHA that can become a release source | successful exact-SHA `CI` and `Security`, optional `CodeQL` |
-| Release candidate | explicit `workflow_dispatch` | Run release-grade, exact-source acceptance once for the intended current-main SHA | `Trusted Release Proof` |
-| Publication | explicit `workflow_dispatch` | Verify prior evidence, build distributables, attest, tag, and publish | immutable tag + GitHub Release + checksums/SBOM/provenance |
-| Metadata repair | canonical metadata push or explicit `workflow_dispatch` | Repair mutable GitHub Release presentation only | verified title/body repair with tag/assets/checksums unchanged |
-
-`Trusted Release Proof` does not run on every pull-request commit, ordinary main push, or tag creation. It is an explicit release-candidate gate. The publication pipeline requires a successful `workflow_dispatch` proof for the exact current-main SHA in addition to successful main-branch `CI` and `Security` runs.
-
-Creating the immutable tag does not rerun the proof. Publication consumes evidence that already certifies the same source SHA.
+| Pull request | `pull_request` | Correctness/security feedback before merge | `CI`, `Security`, optional `CodeQL` |
+| Main branch | `push` to `main` | Certify the actual merge SHA | successful exact-SHA `CI` and `Security` |
+| Release candidate | explicit `workflow_dispatch` | Release-grade exact-source acceptance | `Trusted Release Proof` |
+| Publication | explicit `workflow_dispatch` | Verify evidence, build, attest, tag, publish | immutable tag + Release + checksums/SBOM/provenance |
+| Metadata repair | canonical metadata push or explicit dispatch | Repair mutable Release presentation only | verified name/body repair with immutable state unchanged |
 
 ## Runner ownership
 
-Consumer callers invoke `Reusable Runner Policy` and receive one resolved `runner_json` output. The low-level hosted probe, organization variable interpretation, fork safety, hosted/self-hosted labels, and failover logic live only in `prodkit-workflows`.
+A caller passes `runner_json` directly to the reusable workload. New generated callers do not invoke a runner-policy workflow first.
 
-`PRODKIT_RUNNER_MODE` supports `auto`, `github-hosted`, and `self-hosted`; an unset organization/repository value is treated as `auto` when the caller uses `policy`. Explicit workflow-dispatch overrides remain available for operations.
+For trusted workloads the default target is `["self-hosted","Linux","X64"]`; `PRODKIT_RUNNER_JSON` may replace that JSON in generated generic callers. CI/Security fork PRs are forced to GitHub-hosted execution.
 
-Fork-originated pull requests are forced to the hosted lane when `fork_safe` is enabled. Trusted release operations set `fork_safe: false` because they are never fork-PR entry points.
+This intentionally avoids hosted probes, resolver jobs, destructive workspace preflight, and automatic runner switching. A workload gets one execution target and either succeeds or fails.
 
-## Consumer ownership
+## Pull request and main
 
-A consumer repository should contain only thin workflow callers plus `.prodkit/workflows/*` adapters. Examples include Python/Node/PostgreSQL/browser checks, repository-specific security checks, release-proof acceptance, CodeQL policy, and the release build contract.
+Normal CI and Security use compact reusable workflows. Each renders one stable workload job:
 
-Common orchestration remains centralized:
+- `ci / CI Required`
+- `security / Security Required`
 
-- runner resolution;
-- CI matrix execution and required aggregation;
-- Security execution and required aggregation;
-- CodeQL matrix execution;
-- exact-source Release Proof orchestration;
-- release-candidate proof gating;
-- immutable publication;
-- current-release metadata reconciliation;
-- optional published Release title normalization.
+Compatibility and scanning dimensions execute as steps, and the final aggregate verifier fails closed if any enabled control failed.
 
-## Release presentation
+## Release candidate
 
-ProdKit Quality is a release-presentation reference, not a runner-policy consumer. Its visible pattern is promoted as the organization release UX contract:
+`Trusted Release Proof` is dispatch-only and certifies `${{ github.sha }}` from the branch/ref on which it is dispatched. Operators do not paste a source SHA into the workflow.
 
-- tag: `vX.Y.Z`;
-- GitHub Release name: `ProdKit <Repository Name> vX.Y.Z`;
-- canonical note begins with `# vX.Y.Z — <milestone>`;
-- GitHub Release body is the complete canonical version document.
+The reusable proof checks that this SHA is still current `main`, executes the repository-owned `.prodkit/workflows/release-proof.sh`, proves the tracked source remained unchanged, and uploads proof evidence.
 
-Consumer manifests express that presentation through `.prodkit/release.json`; the shared publication and metadata workflows enforce it.
+It does not run on every pull-request commit, ordinary main push, or tag event.
+
+## Publication
+
+`Release` is dispatch-only. Its only semantic operator input is the version (plus prerelease state when applicable). The release target is `${{ github.sha }}` from the dispatch on `main`.
+
+Before publication the caller requires a successful dispatch of `Trusted Release Proof` for that exact SHA. The guarded reusable publisher independently requires successful `push` runs of `CI` and `Security` for the same exact SHA.
+
+The reusable publisher then validates release metadata, executes the repository release-build adapter, adds central source/SBOM/checksum/provenance evidence, creates or verifies the immutable tag, performs draft-first publication, reads assets back, and verifies the published checksum set.
+
+Tag creation never reruns the proof and a product/release failure never switches runners.
+
+## Metadata repair
+
+Release metadata repair is separate from publication. It may reconcile canonical GitHub Release name/body from current repository metadata only after proving the historical tag and payload identity remain unchanged.
+
+It cannot move/create tags, rebuild or replace assets, change checksums, or change publication flags.
+
+## Backward compatibility
+
+`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain available for older immutable consumers. They are not part of the generated default lifecycle after the direct-runner architecture became normative.
+
+ProdKit Quality remains a release-presentation reference, not a runner-controller dependency.
