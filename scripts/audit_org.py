@@ -1,50 +1,143 @@
 #!/usr/bin/env python3
-import argparse, base64, json, os, re, urllib.error, urllib.parse, urllib.request
+import argparse
+import base64
+import json
+import os
+import re
+import urllib.error
+import urllib.request
+
 
 def api(url, token):
-    req=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'prodkit-workflows-audit'})
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "prodkit-workflows-audit",
+        },
+    )
     try:
-        with urllib.request.urlopen(req) as r: return json.load(r),r.headers
-    except urllib.error.HTTPError as e:
-        if e.code==404: return None,{}
+        with urllib.request.urlopen(req) as response:
+            return json.load(response), response.headers
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None, {}
         raise
 
-def file_text(repo,path,token):
-    obj,_=api(f'https://api.github.com/repos/{repo}/contents/{path}',token)
-    if not obj: return None
-    return base64.b64decode(obj['content']).decode()
+
+def file_text(repo, path, token):
+    obj, _ = api(f"https://api.github.com/repos/{repo}/contents/{path}", token)
+    if not obj:
+        return None
+    return base64.b64decode(obj["content"]).decode()
+
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--org',required=True); ap.add_argument('--workflows-repository',required=True); ap.add_argument('--required-sha',required=True); ap.add_argument('--repository-prefix',default=''); ap.add_argument('--json-out')
-    a=ap.parse_args(); token=os.environ.get('GITHUB_TOKEN');
-    if not token: raise SystemExit('GITHUB_TOKEN required')
-    if not re.fullmatch(r'[0-9a-f]{40}',a.required_sha): raise SystemExit('required SHA must be 40 lowercase hex chars')
-    repos=[]; page=1
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--org", required=True)
+    parser.add_argument("--workflows-repository", required=True)
+    parser.add_argument("--required-sha", required=True)
+    parser.add_argument("--repository-prefix", default="")
+    parser.add_argument("--json-out")
+    args = parser.parse_args()
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise SystemExit("GITHUB_TOKEN required")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.required_sha):
+        raise SystemExit("required SHA must be 40 lowercase hex chars")
+
+    repos = []
+    page = 1
     while True:
-        data,_=api(f'https://api.github.com/orgs/{a.org}/repos?per_page=100&page={page}&type=all',token)
-        if not data: break
+        data, _ = api(
+            f"https://api.github.com/orgs/{args.org}/repos?per_page=100&page={page}&type=all",
+            token,
+        )
+        if not data:
+            break
         repos.extend(data)
-        if len(data)<100: break
-        page+=1
-    findings=[]; required={'ci.yml':'reusable-ci.yml','security.yml':'reusable-security.yml','release.yml':'reusable-release.yml'}
-    direct_release_patterns=[r'softprops/action-gh-release',r'gh\s+release\s+create',r'/releases(?:/|\b)',r'git\s+tag\s+',r'npm\s+publish',r'uv\s+publish']
-    for r in sorted(repos,key=lambda x:x['name']):
-        name=r['name']
-        if r.get('archived') or (a.repository_prefix and not name.startswith(a.repository_prefix)) or r['full_name']==a.workflows_repository: continue
-        repo=r['full_name']; errs=[]
-        for filename,target in required.items():
-            text=file_text(repo,f'.github/workflows/{filename}',token)
-            if text is None: errs.append(f'missing .github/workflows/{filename}'); continue
-            expected=f'{a.workflows_repository}/.github/workflows/{target}@{a.required_sha}'
-            if expected not in text: errs.append(f'{filename} not pinned to required central SHA')
-            floating=re.findall(re.escape(a.workflows_repository)+r'/.github/workflows/[^@\s]+@([^\s]+)',text)
-            if any(not re.fullmatch(r'[0-9a-f]{40}',x) for x in floating): errs.append(f'{filename} contains floating central reference')
-            if filename=='release.yml':
-                for pat in direct_release_patterns:
-                    if re.search(pat,text,re.I): errs.append(f'release.yml contains local publication implementation: {pat}')
-        if errs: findings.append({'repository':repo,'errors':sorted(set(errs))})
-    report={'organization':a.org,'workflows_repository':a.workflows_repository,'required_sha':a.required_sha,'repositories_checked':len([r for r in repos if not r.get('archived') and (not a.repository_prefix or r['name'].startswith(a.repository_prefix)) and r['full_name']!=a.workflows_repository]),'noncompliant':findings}
-    out=json.dumps(report,indent=2); print(out)
-    if a.json_out: open(a.json_out,'w').write(out+'\n')
-    if findings: raise SystemExit(f'{len(findings)} repositories violate workflow policy')
-if __name__=='__main__': main()
+        if len(data) < 100:
+            break
+        page += 1
+
+    required = {
+        "ci.yml": "reusable-ci-compact.yml",
+        "security.yml": "reusable-security-compact.yml",
+        "trusted-release-proof.yml": "reusable-release-proof.yml",
+        "release.yml": "reusable-release-pipeline.yml",
+        "release-metadata.yml": "reusable-release-metadata-current.yml",
+    }
+    direct_release_patterns = [
+        r"softprops/action-gh-release",
+        r"gh\s+release\s+create",
+        r"/releases(?:/|\b)",
+        r"git\s+tag\s+",
+        r"npm\s+publish",
+        r"uv\s+publish",
+    ]
+
+    findings = []
+    repositories_checked = 0
+    for repository in sorted(repos, key=lambda value: value["name"]):
+        name = repository["name"]
+        if repository.get("archived"):
+            continue
+        if args.repository_prefix and not name.startswith(args.repository_prefix):
+            continue
+        if repository["full_name"] == args.workflows_repository:
+            continue
+
+        repositories_checked += 1
+        repo = repository["full_name"]
+        errors = []
+        for filename, target in required.items():
+            text = file_text(repo, f".github/workflows/{filename}", token)
+            if text is None:
+                errors.append(f"missing .github/workflows/{filename}")
+                continue
+
+            expected = (
+                f"{args.workflows_repository}/.github/workflows/{target}@{args.required_sha}"
+            )
+            if expected not in text:
+                errors.append(f"{filename} not pinned to required central SHA/contract")
+
+            floating = re.findall(
+                re.escape(args.workflows_repository)
+                + r"/.github/workflows/[^@\s]+@([^\s]+)",
+                text,
+            )
+            if any(not re.fullmatch(r"[0-9a-f]{40}", ref) for ref in floating):
+                errors.append(f"{filename} contains floating central reference")
+
+            if filename == "release.yml":
+                for pattern in direct_release_patterns:
+                    if re.search(pattern, text, re.I):
+                        errors.append(
+                            f"release.yml contains local publication implementation: {pattern}"
+                        )
+
+        if errors:
+            findings.append({"repository": repo, "errors": sorted(set(errors))})
+
+    report = {
+        "organization": args.org,
+        "workflows_repository": args.workflows_repository,
+        "required_sha": args.required_sha,
+        "repositories_checked": repositories_checked,
+        "noncompliant": findings,
+    }
+    output = json.dumps(report, indent=2)
+    print(output)
+    if args.json_out:
+        with open(args.json_out, "w", encoding="utf-8") as handle:
+            handle.write(output + "\n")
+    if findings:
+        raise SystemExit(f"{len(findings)} repositories violate workflow policy")
+
+
+if __name__ == "__main__":
+    main()
