@@ -15,9 +15,15 @@ on:
         required: true
         type: string
       proof_workflow:
+        description: Human-readable proof workflow label used in diagnostics.
         required: false
         type: string
         default: Trusted Release Proof
+      proof_workflow_file:
+        description: Proof workflow file name under .github/workflows; used as the authoritative workflow identity.
+        required: false
+        type: string
+        default: trusted-release-proof.yml
       required_push_workflows_json:
         description: Successful push workflows required on the exact target SHA before publication.
         required: false
@@ -83,6 +89,7 @@ jobs:
     env:
       TARGET_SHA: ${{ inputs.target_sha }}
       PROOF_WORKFLOW: ${{ inputs.proof_workflow }}
+      PROOF_WORKFLOW_FILE: ${{ inputs.proof_workflow_file }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Verify successful dispatched proof for exact SHA
@@ -90,17 +97,35 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, urllib.parse, urllib.request
+
           sha = os.environ["TARGET_SHA"]
           if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
               raise SystemExit("target_sha must be an exact lowercase 40-character commit SHA")
+
           repo = os.environ["GITHUB_REPOSITORY"]
-          workflow = os.environ["PROOF_WORKFLOW"]
+          workflow_label = os.environ["PROOF_WORKFLOW"]
+          workflow_file = os.environ["PROOF_WORKFLOW_FILE"]
           token = os.environ["GH_TOKEN"]
+
+          if (
+              not workflow_file
+              or "/" in workflow_file
+              or "\\" in workflow_file
+              or not workflow_file.endswith((".yml", ".yaml"))
+          ):
+              raise SystemExit("proof_workflow_file must be a workflow filename ending in .yml or .yaml")
+
           params = urllib.parse.urlencode(
-              {"head_sha": sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}
+              {
+                  "head_sha": sha,
+                  "event": "workflow_dispatch",
+                  "status": "completed",
+                  "per_page": 100,
+              }
           )
+          workflow_id = urllib.parse.quote(workflow_file, safe="")
           request = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/runs?{params}",
+              f"https://api.github.com/repos/{repo}/actions/workflows/{workflow_id}/runs?{params}",
               headers={
                   "Authorization": f"Bearer {token}",
                   "Accept": "application/vnd.github+json",
@@ -110,10 +135,12 @@ jobs:
           )
           with urllib.request.urlopen(request, timeout=120) as response:
               runs = json.load(response).get("workflow_runs", [])
+
+          expected_path = f".github/workflows/{workflow_file}"
           matches = [
               run
               for run in runs
-              if run.get("name") == workflow
+              if run.get("path") == expected_path
               and run.get("head_sha") == sha
               and run.get("event") == "workflow_dispatch"
               and run.get("status") == "completed"
@@ -121,9 +148,13 @@ jobs:
           ]
           if not matches:
               raise SystemExit(
-                  f"missing successful workflow_dispatch {workflow!r} proof for exact SHA {sha}"
+                  "missing successful workflow_dispatch "
+                  f"{workflow_label!r} ({workflow_file}) proof for exact SHA {sha}"
               )
-          print(f"release-candidate proof: {matches[0].get('html_url')}")
+          print(
+              f"release-candidate proof: {matches[0].get('html_url')} "
+              f"[{expected_path}]"
+          )
           PY
 
   publish:
