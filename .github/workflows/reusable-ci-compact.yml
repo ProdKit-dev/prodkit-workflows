@@ -1,0 +1,383 @@
+name: Reusable CI Compact
+
+on:
+  workflow_call:
+    inputs:
+      runner_json:
+        description: JSON value accepted by runs-on.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      hygiene_enabled:
+        required: false
+        type: boolean
+        default: true
+      hygiene_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-hygiene.sh
+      python_enabled:
+        required: false
+        type: boolean
+        default: false
+      python_versions_json:
+        required: false
+        type: string
+        default: '["3.12","3.13","3.14"]'
+      python_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-python.sh
+      node_enabled:
+        required: false
+        type: boolean
+        default: false
+      node_versions_json:
+        required: false
+        type: string
+        default: '["20","22","24"]'
+      node_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-node.sh
+      postgres_enabled:
+        required: false
+        type: boolean
+        default: false
+      postgres_image:
+        required: false
+        type: string
+        default: postgres:18-alpine
+      postgres_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-postgres.sh
+      container_enabled:
+        required: false
+        type: boolean
+        default: false
+      container_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-container.sh
+      custom_enabled:
+        required: false
+        type: boolean
+        default: false
+      custom_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-custom.sh
+
+permissions:
+  contents: read
+
+jobs:
+  required:
+    name: CI Required
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate compact matrix contract
+        env:
+          PYTHON_ENABLED: ${{ inputs.python_enabled }}
+          PYTHON_VERSIONS: ${{ inputs.python_versions_json }}
+          NODE_ENABLED: ${{ inputs.node_enabled }}
+          NODE_VERSIONS: ${{ inputs.node_versions_json }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          def check(enabled, raw, allowed, label):
+              if enabled != 'true':
+                  return
+              values=json.loads(raw)
+              if not isinstance(values, list) or not values or any(not isinstance(v, str) for v in values):
+                  raise SystemExit(f'{label} versions must be a non-empty JSON string array')
+              if len(values) != len(set(values)):
+                  raise SystemExit(f'{label} versions must not contain duplicates')
+              unknown=[v for v in values if v not in allowed]
+              if unknown:
+                  raise SystemExit(f'unsupported compact {label} versions: {unknown}; allowed={sorted(allowed)}')
+          check(os.environ['PYTHON_ENABLED'], os.environ['PYTHON_VERSIONS'], {'3.12','3.13','3.14'}, 'Python')
+          check(os.environ['NODE_ENABLED'], os.environ['NODE_VERSIONS'], {'20','22','24'}, 'Node')
+          PY
+
+      - name: Hygiene
+        id: hygiene
+        if: inputs.hygiene_enabled
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.hygiene_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Set up uv
+        id: setup_uv
+        if: inputs.python_enabled
+        continue-on-error: true
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.10.0"
+          enable-cache: true
+
+      - name: Python 3.12
+        id: python_312
+        if: inputs.python_enabled && steps.setup_uv.outcome == 'success' && contains(fromJSON(inputs.python_versions_json), '3.12')
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+          PRODKIT_PYTHON_VERSION: "3.12"
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv python install "$PRODKIT_PYTHON_VERSION"
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Python 3.13
+        id: python_313
+        if: inputs.python_enabled && steps.setup_uv.outcome == 'success' && contains(fromJSON(inputs.python_versions_json), '3.13')
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+          PRODKIT_PYTHON_VERSION: "3.13"
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv python install "$PRODKIT_PYTHON_VERSION"
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Python 3.14
+        id: python_314
+        if: inputs.python_enabled && steps.setup_uv.outcome == 'success' && contains(fromJSON(inputs.python_versions_json), '3.14')
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.python_script }}
+          PRODKIT_PYTHON_VERSION: "3.14"
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv python install "$PRODKIT_PYTHON_VERSION"
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Set up Node 20
+        id: setup_node_20
+        if: inputs.node_enabled && contains(fromJSON(inputs.node_versions_json), '20')
+        continue-on-error: true
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+
+      - name: Node 20
+        id: node_20
+        if: inputs.node_enabled && steps.setup_node_20.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '20')
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+          PRODKIT_NODE_VERSION: "20"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Set up Node 22
+        id: setup_node_22
+        if: inputs.node_enabled && contains(fromJSON(inputs.node_versions_json), '22')
+        continue-on-error: true
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Node 22
+        id: node_22
+        if: inputs.node_enabled && steps.setup_node_22.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '22')
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+          PRODKIT_NODE_VERSION: "22"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Set up Node 24
+        id: setup_node_24
+        if: inputs.node_enabled && contains(fromJSON(inputs.node_versions_json), '24')
+        continue-on-error: true
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Node 24
+        id: node_24
+        if: inputs.node_enabled && steps.setup_node_24.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '24')
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_script }}
+          PRODKIT_NODE_VERSION: "24"
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Start isolated PostgreSQL
+        id: postgres_start
+        if: inputs.postgres_enabled
+        continue-on-error: true
+        env:
+          POSTGRES_IMAGE: ${{ inputs.postgres_image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="prodkit-ci-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker rm -f "$name" >/dev/null 2>&1 || true
+          docker run -d --name "$name" \
+            -e POSTGRES_DB=prodkit_ci -e POSTGRES_USER=prodkit -e POSTGRES_PASSWORD=prodkit \
+            -p 127.0.0.1::5432 "$POSTGRES_IMAGE" >/dev/null
+          for _ in $(seq 1 45); do
+            if docker exec "$name" pg_isready -U prodkit -d prodkit_ci >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec "$name" pg_isready -U prodkit -d prodkit_ci >/dev/null
+          port="$(docker port "$name" 5432/tcp | awk -F: 'END{print $NF}')"
+          test -n "$port"
+          echo "container=$name" >> "$GITHUB_OUTPUT"
+          echo "port=$port" >> "$GITHUB_OUTPUT"
+
+      - name: PostgreSQL
+        id: postgres
+        if: inputs.postgres_enabled && steps.postgres_start.outcome == 'success'
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.postgres_script }}
+          PRODKIT_POSTGRES_HOST: 127.0.0.1
+          PRODKIT_POSTGRES_PORT: ${{ steps.postgres_start.outputs.port }}
+          PRODKIT_POSTGRES_DATABASE: prodkit_ci
+          PRODKIT_POSTGRES_USER: prodkit
+          PRODKIT_POSTGRES_PASSWORD: prodkit
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Stop PostgreSQL
+        if: always() && inputs.postgres_enabled
+        env:
+          CONTAINER: ${{ steps.postgres_start.outputs.container }}
+        shell: bash
+        run: |
+          if [[ -n "${CONTAINER:-}" ]]; then docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; fi
+
+      - name: Container
+        id: container
+        if: inputs.container_enabled
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.container_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Custom
+        id: custom
+        if: inputs.custom_enabled
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.custom_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
+      - name: Verify CI contract
+        if: always()
+        env:
+          HYGIENE: ${{ steps.hygiene.outcome }}
+          SETUP_UV: ${{ steps.setup_uv.outcome }}
+          PYTHON_312: ${{ steps.python_312.outcome }}
+          PYTHON_313: ${{ steps.python_313.outcome }}
+          PYTHON_314: ${{ steps.python_314.outcome }}
+          SETUP_NODE_20: ${{ steps.setup_node_20.outcome }}
+          NODE_20: ${{ steps.node_20.outcome }}
+          SETUP_NODE_22: ${{ steps.setup_node_22.outcome }}
+          NODE_22: ${{ steps.node_22.outcome }}
+          SETUP_NODE_24: ${{ steps.setup_node_24.outcome }}
+          NODE_24: ${{ steps.node_24.outcome }}
+          POSTGRES_START: ${{ steps.postgres_start.outcome }}
+          POSTGRES: ${{ steps.postgres.outcome }}
+          CONTAINER: ${{ steps.container.outcome }}
+          CUSTOM: ${{ steps.custom.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          names=(
+              'HYGIENE','SETUP_UV','PYTHON_312','PYTHON_313','PYTHON_314',
+              'SETUP_NODE_20','NODE_20','SETUP_NODE_22','NODE_22','SETUP_NODE_24','NODE_24',
+              'POSTGRES_START','POSTGRES','CONTAINER','CUSTOM',
+          )
+          bad={name: os.environ.get(name, '') for name in names if os.environ.get(name, '') not in {'success','skipped'}}
+          if bad:
+              raise SystemExit(f'CI compact contract failed: {bad}')
+          print('CI compact contract satisfied')
+          PY
