@@ -146,3 +146,26 @@ jobs:
             echo "lane=$effective"
           } >> "$GITHUB_OUTPUT"
           echo "resolved runner lane: $effective"
+
+      - name: Prepare trusted self-hosted workspace
+        if: steps.resolve.outputs.lane == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
+          case "$workspace" in
+            */_work/*/*) ;;
+            *) echo "refusing to clean unexpected workspace path: $workspace" >&2; exit 1 ;;
+          esac
+          [[ "$workspace" != "/" ]]
+          mkdir -p "$workspace"
+          shopt -s dotglob nullglob
+          entries=("$workspace"/*)
+          if (( ${#entries[@]} > 0 )); then
+            rm -rf -- "${entries[@]}"
+          fi
+          if find "$workspace" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+            echo "trusted self-hosted workspace is not empty after cleanup: $workspace" >&2
+            exit 1
+          fi
+          echo "prepared trusted self-hosted workspace: $workspace"
