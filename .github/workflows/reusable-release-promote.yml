@@ -182,8 +182,10 @@ jobs:
                   obj = api("GET", f"/git/tags/{sha}")["object"]
               if obj.get("type") != "commit" or obj.get("sha") != source_sha:
                   raise SystemExit(f"existing {tag} does not resolve to proven SHA {source_sha}")
-              print(f"{tag} is already published on the proven SHA; promotion is idempotently complete")
-              raise SystemExit(0)
+              print(
+                  f"{tag} already exists on the proven SHA; the idempotent Release workflow "
+                  "will be dispatched again so publication is fully re-verified"
+              )
 
           query = urllib.parse.urlencode(
               {"head_sha": source_sha, "event": "workflow_dispatch", "per_page": 100}
@@ -197,15 +199,14 @@ jobs:
               and run.get("head_sha") == source_sha
               and run.get("event") == "workflow_dispatch"
           ]
-          reusable = [
+          active = [
               run
               for run in release_runs
               if run.get("status") in {"queued", "in_progress", "pending"}
-              or (run.get("status") == "completed" and run.get("conclusion") == "success")
           ]
-          if reusable:
-              selected = max(reusable, key=lambda run: int(run["id"]))
-              print(f"Release run {selected['id']} already exists; no duplicate dispatch")
+          if active:
+              selected = max(active, key=lambda run: int(run["id"]))
+              print(f"active Release run {selected['id']} already exists; no duplicate dispatch")
               raise SystemExit(0)
 
           prerelease = "true" if "-" in version.split("+", 1)[0] else "false"
