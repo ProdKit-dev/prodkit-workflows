@@ -169,7 +169,9 @@ jobs:
     if: (inputs.normalize_all_titles || inputs.normalize_all_releases) && needs.repair.result == 'success'
     runs-on: ${{ fromJSON(inputs.runner_json) }}
     timeout-minutes: 20
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     env:
       GH_TOKEN: ${{ github.token }}
       MANIFEST_PATH: ${{ inputs.manifest_path }}

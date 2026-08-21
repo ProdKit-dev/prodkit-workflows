@@ -41,7 +41,9 @@ jobs:
     name: Guarded release metadata repair
     runs-on: ${{ fromJSON(inputs.runner_json) }}
     timeout-minutes: 20
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     env:
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_TAG: v${{ inputs.version }}
