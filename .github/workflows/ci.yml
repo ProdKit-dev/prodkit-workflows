@@ -18,7 +18,7 @@ jobs:
     name: ci
     uses: ./.github/workflows/reusable-ci-compact.yml
     with:
-      runner_json: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '"ubuntu-latest"' || '["self-hosted","Linux","X64"]' }}
+      runner_json: '"ubuntu-latest"'
       hygiene_enabled: true
       python_enabled: false
       node_enabled: false
