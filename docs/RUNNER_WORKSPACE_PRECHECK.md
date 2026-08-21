@@ -9,6 +9,7 @@ The preflight is intentionally fail-closed:
 - it runs only when the resolved lane is `self-hosted`;
 - it refuses workspace paths outside the expected GitHub Actions `_work/<repository>/<repository>` shape;
 - it removes only entries inside `GITHUB_WORKSPACE`, never the workspace directory or its parent;
+- if ordinary cleanup hits privileged/root-owned artifacts, it first tries noninteractive `sudo` and then a Docker-root ownership repair before retrying cleanup;
 - it verifies the workspace is empty before publishing runner resolution to downstream jobs.
 
 Repository-specific adapters remain responsible for avoiding privileged build artifacts in bind-mounted workspaces. In particular, Docker-backed Python acceptance should set `PYTHONDONTWRITEBYTECODE=1` or otherwise avoid producing root-owned bytecode in the host worktree.
