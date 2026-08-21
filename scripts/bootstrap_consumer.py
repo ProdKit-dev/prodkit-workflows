@@ -31,6 +31,8 @@ def main() -> None:
         src / "caller/trusted-release-proof.yml": dest
         / ".github/workflows/trusted-release-proof.yml",
         src / "caller/release.yml": dest / ".github/workflows/release.yml",
+        src / "caller/release-verification.yml": dest
+        / ".github/workflows/release-verification.yml",
         src / "caller/release-metadata.yml": dest / ".github/workflows/release-metadata.yml",
         src / "consumer/.prodkit/release.json": dest / ".prodkit/release.json",
     }
