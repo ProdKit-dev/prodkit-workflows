@@ -30,7 +30,12 @@ on:
         type: string
         default: release
       normalize_all_titles:
-        description: Normalize every published SemVer Release name from release.name_template after repair.
+        description: Backward-compatible option to normalize every published SemVer Release name.
+        required: false
+        type: boolean
+        default: false
+      normalize_all_releases:
+        description: Normalize every published SemVer Release name and canonical notes body from the release manifest.
         required: false
         type: boolean
         default: false
@@ -158,41 +163,70 @@ jobs:
       main_branch: ${{ inputs.main_branch }}
       environment: ${{ inputs.environment }}
 
-  normalize-titles:
-    name: Normalize published release titles
+  normalize-releases:
+    name: Normalize published release presentation
     needs: repair
-    if: inputs.normalize_all_titles && needs.repair.result == 'success'
+    if: (inputs.normalize_all_titles || inputs.normalize_all_releases) && needs.repair.result == 'success'
     runs-on: ${{ fromJSON(inputs.runner_json) }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     environment: ${{ inputs.environment }}
     env:
       GH_TOKEN: ${{ github.token }}
       MANIFEST_PATH: ${{ inputs.manifest_path }}
+      NORMALIZE_NOTES: ${{ inputs.normalize_all_releases }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ inputs.main_branch }}
 
-      - name: Normalize SemVer Release names only
+      - name: Normalize SemVer Release names and canonical notes
         shell: bash
         run: |
+          set -euo pipefail
+          git fetch origin "${{ inputs.main_branch }}" --tags --force
           python3 - <<'PY'
-          import json, os, pathlib, re, urllib.request
+          import json
+          import os
+          import pathlib
+          import re
+          import urllib.parse
+          import urllib.request
+
+          root = pathlib.Path.cwd().resolve()
           repo = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
-          manifest = json.loads(pathlib.Path(os.environ["MANIFEST_PATH"]).read_text(encoding="utf-8"))
-          template = manifest.get("release", {}).get("name_template", "{repository} {tag}")
-          semver = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+          normalize_notes = os.environ["NORMALIZE_NOTES"].lower() == "true"
+
+          def inside(value: str) -> pathlib.Path:
+              raw = pathlib.Path(value)
+              if raw.is_absolute():
+                  raise SystemExit(f"absolute path is not allowed: {value}")
+              path = (root / raw).resolve()
+              if path == root or root not in path.parents:
+                  raise SystemExit(f"path escapes repository: {value}")
+              return path
+
+          manifest = json.loads(inside(os.environ["MANIFEST_PATH"]).read_text(encoding="utf-8"))
+          name_template = manifest.get("release", {}).get("name_template", "{repository} {tag}")
+          notes_template = manifest.get("notes", {}).get("path_template")
+          if not isinstance(notes_template, str) or not notes_template:
+              raise SystemExit("release manifest notes.path_template is required")
+
+          semver = re.compile(
+              r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+              r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+          )
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/vnd.github+json",
               "X-GitHub-Api-Version": "2022-11-28",
-              "User-Agent": "prodkit-workflows-release-title-normalizer",
+              "User-Agent": "prodkit-workflows-release-presentation-normalizer",
           }
           api = f"https://api.github.com/repos/{repo}"
 
-          def request(method, url, payload=None):
+          def request(method: str, url: str, payload=None):
               data = None
               h = dict(headers)
               if payload is not None:
@@ -206,46 +240,91 @@ jobs:
           page = 1
           while True:
               batch = request("GET", f"{api}/releases?per_page=100&page={page}")
+              if not isinstance(batch, list):
+                  raise SystemExit("cannot enumerate GitHub Releases")
               releases.extend(batch)
               if len(batch) < 100:
                   break
               page += 1
 
+          checked = 0
           changed = 0
           for release in releases:
-              tag = release.get("tag_name")
-              if release.get("draft") is not False or not isinstance(tag, str) or not semver.fullmatch(tag):
+              if release.get("draft") is not False:
                   continue
-              expected = template.format(
+              tag = release.get("tag_name")
+              if not isinstance(tag, str) or not semver.fullmatch(tag):
+                  raise SystemExit(f"published Release has non-canonical tag: {tag!r}")
+
+              version = tag[1:]
+              expected_name = name_template.format(
                   repository=repo.split("/", 1)[-1],
-                  version=tag[1:],
+                  version=version,
                   tag=tag,
               )
-              if release.get("name") == expected:
-                  continue
+              notes_path = inside(notes_template.format(version=version, tag=tag))
+              if not notes_path.is_file():
+                  raise SystemExit(f"canonical release notes missing for {tag}: {notes_path.relative_to(root)}")
+              expected_body = notes_path.read_text(encoding="utf-8")
+              if not expected_body.strip():
+                  raise SystemExit(f"canonical release notes are empty for {tag}")
+
+              encoded_tag = urllib.parse.quote(tag, safe="")
+              before_ref = request("GET", f"{api}/git/ref/tags/{encoded_tag}")
+              ref_object = before_ref.get("object", {})
+              before_ref_identity = (ref_object.get("type"), ref_object.get("sha"))
+              if not all(before_ref_identity):
+                  raise SystemExit(f"cannot resolve immutable tag ref {tag}")
+
               before = {
                   "tag_name": release.get("tag_name"),
-                  "body": release.get("body"),
                   "draft": release.get("draft"),
                   "prerelease": release.get("prerelease"),
+                  "target_commitish": release.get("target_commitish"),
                   "assets": sorted(
                       (a.get("id"), a.get("name"), a.get("size"), a.get("digest"))
                       for a in release.get("assets", [])
                   ),
               }
-              updated = request("PATCH", f"{api}/releases/{release['id']}", {"name": expected})
+
+              payload = {}
+              if release.get("name") != expected_name:
+                  payload["name"] = expected_name
+              if normalize_notes and release.get("body") != expected_body:
+                  payload["body"] = expected_body
+
+              if payload:
+                  updated = request("PATCH", f"{api}/releases/{release['id']}", payload)
+                  changed += 1
+              else:
+                  updated = request("GET", f"{api}/releases/{release['id']}")
+
               after = {
                   "tag_name": updated.get("tag_name"),
-                  "body": updated.get("body"),
                   "draft": updated.get("draft"),
                   "prerelease": updated.get("prerelease"),
+                  "target_commitish": updated.get("target_commitish"),
                   "assets": sorted(
                       (a.get("id"), a.get("name"), a.get("size"), a.get("digest"))
                       for a in updated.get("assets", [])
                   ),
               }
-              if updated.get("name") != expected or after != before:
-                  raise SystemExit(f"non-title Release metadata changed for {tag}")
-              changed += 1
-          print(f"release titles canonical; changed={changed}")
+              if after != before:
+                  raise SystemExit(f"immutable/non-presentation Release metadata changed for {tag}")
+              if updated.get("name") != expected_name:
+                  raise SystemExit(f"Release title normalization failed for {tag}")
+              if normalize_notes and updated.get("body") != expected_body:
+                  raise SystemExit(f"Release notes normalization failed for {tag}")
+
+              after_ref = request("GET", f"{api}/git/ref/tags/{encoded_tag}")
+              after_ref_object = after_ref.get("object", {})
+              after_ref_identity = (after_ref_object.get("type"), after_ref_object.get("sha"))
+              if after_ref_identity != before_ref_identity:
+                  raise SystemExit(f"immutable tag ref changed during presentation repair: {tag}")
+              checked += 1
+
+          print(
+              f"release presentation canonical: checked={checked}; changed={changed}; "
+              f"notes={'yes' if normalize_notes else 'no'}"
+          )
           PY
