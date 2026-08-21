@@ -161,7 +161,9 @@ jobs:
       runner_json: ${{ inputs.runner_json }}
       manifest_path: ${{ inputs.manifest_path }}
       main_branch: ${{ inputs.main_branch }}
-      environment: ${{ inputs.environment }}
+      environment:
+      name: ${{ inputs.environment }}
+      deployment: false
 
   normalize-releases:
     name: Normalize published release presentation
@@ -169,7 +171,9 @@ jobs:
     if: (inputs.normalize_all_titles || inputs.normalize_all_releases) && needs.repair.result == 'success'
     runs-on: ${{ fromJSON(inputs.runner_json) }}
     timeout-minutes: 20
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     env:
       GH_TOKEN: ${{ github.token }}
       MANIFEST_PATH: ${{ inputs.manifest_path }}

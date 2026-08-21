@@ -92,7 +92,9 @@ jobs:
     name: Guarded release
     runs-on: ${{ fromJSON(inputs.runner_json) }}
     timeout-minutes: 90
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     env:
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_TAG: v${{ inputs.version }}
