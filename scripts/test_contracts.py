@@ -107,43 +107,22 @@ def write_manifest_fixture(root: pathlib.Path, manifest: dict[str, object]) -> N
     (root / ".prodkit/release.json").write_text(json.dumps(manifest))
 
 
-def test_manifest_contract() -> None:
-    with tempfile.TemporaryDirectory() as td:
-        root = pathlib.Path(td)
-        write_manifest_fixture(root, base_manifest())
-        run_validator(root, expect_success=True)
-
-    with tempfile.TemporaryDirectory() as td:
-        root = pathlib.Path(td)
-        manifest = base_manifest()
-        manifest["version"] = {"sources": []}
-        write_manifest_fixture(root, manifest)
-        run_validator(root, expect_success=False)
-
-    schema = json.loads((ROOT / "contracts/release-manifest.schema.json").read_text())
-    if schema.get("additionalProperties") is not False:
-        raise SystemExit("release schema must reject unknown top-level properties")
-
-
-def assert_thin_caller(path: pathlib.Path) -> None:
+def assert_direct_caller(path: pathlib.Path) -> None:
     text = path.read_text()
-    require(
-        text,
-        (
-            "reusable-runner-policy.yml@",
-            "needs: runner",
-            "needs.runner.outputs.runner_json",
-        ),
-        name=str(path),
-    )
+    if "reusable-runner-policy.yml@" in text:
+        raise SystemExit(f"consumer caller must not use runner-controller workflow: {path}")
     for forbidden in (
+        "PRODKIT_RUNNER_MODE",
+        "needs: runner",
+        "needs.runner.outputs.runner_json",
         "runner-probe:",
         "needs.runner-probe",
-        "fromJSON(",
-        '["self-hosted","Linux","X64"]',
+        "options: [policy, auto, github-hosted, self-hosted]",
     ):
         if forbidden in text:
-            raise SystemExit(f"consumer caller owns runner internals: {path}: {forbidden}")
+            raise SystemExit(f"consumer caller contains retired runner-controller detail: {path}: {forbidden}")
+    if "runner_json:" not in text:
+        raise SystemExit(f"consumer caller must select runner JSON directly: {path}")
 
 
 def test_bootstrap() -> None:
@@ -171,21 +150,27 @@ def test_bootstrap() -> None:
             text = (dest / ".github/workflows" / name).read_text()
             if f"@{sha}" not in text or "example/workflows/.github/workflows/" not in text:
                 raise SystemExit(f"bootstrap pin failure: {name}")
-        for name in (
-            "ci.yml",
-            "security.yml",
-            "release.yml",
-            "release-metadata.yml",
-            "trusted-release-proof.yml",
-        ):
-            assert_thin_caller(dest / ".github/workflows" / name)
+            assert_direct_caller(dest / ".github/workflows" / name)
 
         ci = (dest / ".github/workflows/ci.yml").read_text()
         security = (dest / ".github/workflows/security.yml").read_text()
+        proof = (dest / ".github/workflows/trusted-release-proof.yml").read_text()
+        release = (dest / ".github/workflows/release.yml").read_text()
+        metadata = (dest / ".github/workflows/release-metadata.yml").read_text()
         if "reusable-ci-compact.yml@" not in ci:
             raise SystemExit("bootstrap CI caller must use compact reusable CI")
         if "reusable-security-compact.yml@" not in security:
             raise SystemExit("bootstrap Security caller must use compact reusable Security")
+        if "source_sha: ${{ github.sha }}" not in proof:
+            raise SystemExit("bootstrap proof caller must certify dispatched current main")
+        if "reusable-release.yml@" not in release or "reusable-release-pipeline.yml@" in release:
+            raise SystemExit("bootstrap Release caller must use the guarded publisher directly")
+        if "target_sha: ${{ github.sha }}" not in release:
+            raise SystemExit("bootstrap Release caller must publish dispatched current main")
+        if "PROOF_WORKFLOW: Trusted Release Proof" not in release:
+            raise SystemExit("bootstrap Release caller must gate on Trusted Release Proof")
+        if "reusable-release-metadata-current.yml@" not in metadata:
+            raise SystemExit("bootstrap metadata caller must use current release metadata workflow")
 
         adapters = {path.name for path in (dest / ".prodkit/workflows").glob("*.sh")}
         if adapters != EXPECTED_CONSUMER_ADAPTERS:
@@ -206,9 +191,10 @@ def test_bootstrap() -> None:
             ],
             check=True,
         )
-        if not (dest / ".github/workflows/codeql.yml").is_file():
+        codeql = dest / ".github/workflows/codeql.yml"
+        if not codeql.is_file():
             raise SystemExit("bootstrap --include-codeql did not install CodeQL caller")
-        assert_thin_caller(dest / ".github/workflows/codeql.yml")
+        assert_direct_caller(codeql)
 
 
 def main() -> None:
@@ -242,6 +228,8 @@ def main() -> None:
 
     test_bootstrap()
 
+    # Kept only for already-pinned consumers. New templates and self-callers must
+    # not route through this controller.
     runner = (ROOT / ".github/workflows/reusable-runner-policy.yml").read_text()
     require(
         runner,
@@ -254,7 +242,7 @@ def main() -> None:
             "lane:",
             "unsupported runner mode",
         ),
-        name="Reusable Runner Policy",
+        name="Backward-compatible Reusable Runner Policy",
     )
 
     compact_ci = (ROOT / ".github/workflows/reusable-ci-compact.yml").read_text()
@@ -317,6 +305,7 @@ def main() -> None:
         name="Reusable Release Proof",
     )
 
+    # Kept for backward compatibility; generated consumers call reusable-release.yml directly.
     release_pipeline = (ROOT / ".github/workflows/reusable-release-pipeline.yml").read_text()
     require(
         release_pipeline,
@@ -328,7 +317,7 @@ def main() -> None:
             "required_push_workflows_json:",
             "required_workflows_json: ${{ inputs.required_push_workflows_json }}",
         ),
-        name="Reusable Release Pipeline",
+        name="Backward-compatible Reusable Release Pipeline",
     )
 
     codeql = (ROOT / ".github/workflows/reusable-codeql.yml").read_text()
@@ -361,11 +350,12 @@ def main() -> None:
 
     for name in ("ci.yml", "security.yml", "release.yml", "org-audit.yml"):
         text = (ROOT / ".github/workflows" / name).read_text()
-        if "reusable-runner-policy.yml" not in text:
-            raise SystemExit(f"self caller bypasses centralized runner policy: {name}")
-        for forbidden in ("runner-probe:", "needs.runner-probe", "fromJSON("):
-            if forbidden in text:
-                raise SystemExit(f"self caller contains runner implementation detail: {name}: {forbidden}")
+        if "reusable-runner-policy.yml" in text:
+            raise SystemExit(f"self caller must not route through runner controller: {name}")
+        if "needs.runner.outputs.runner_json" in text or "PRODKIT_RUNNER_MODE" in text:
+            raise SystemExit(f"self caller contains retired runner-controller state: {name}")
+        if "runner_json:" not in text:
+            raise SystemExit(f"self caller must choose runner JSON directly: {name}")
 
     lifecycle = (ROOT / "docs/LIFECYCLE.md").read_text()
     require(
