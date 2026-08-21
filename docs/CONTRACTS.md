@@ -1,167 +1,138 @@
 # Consumer Contracts
 
-This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. The reusable workflows, generated caller templates, bootstrap output, local validators, and contract tests must implement the same guarantees. A change to one without the corresponding contract/test change is drift.
+This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. Reusable workflows, caller templates, bootstrap output, validators, and contract tests must implement the same guarantees.
 
-## Repository layers and file ownership
+## Ownership
 
-`prodkit-workflows` deliberately has three different workflow-related surfaces. They are not expected to contain the same number of files.
+`prodkit-workflows` owns organization workflow orchestration. Consumer repositories own configuration, `.prodkit/release.json`, canonical version notes, and repository-specific adapters beneath `.prodkit/workflows/`.
 
-| Surface | Purpose | Canonical files |
-| --- | --- | --- |
-| `.github/workflows/` | Executable GitHub Actions callers plus reusable workflow implementations owned by this control-plane repository | `ci.yml`, `security.yml`, `release.yml`, `org-audit.yml`, `reusable-ci.yml`, `reusable-security.yml`, `reusable-release.yml`, `reusable-release-metadata.yml`, `reusable-org-audit.yml` |
-| `templates/consumer/.prodkit/workflows/` | Complete consumer adapter catalog emitted by bootstrap | `ci-hygiene.sh`, `ci-python.sh`, `ci-node.sh`, `ci-postgres.sh`, `ci-container.sh`, `ci-custom.sh`, `security-python.sh`, `security-node.sh`, `security-container-build.sh`, `security-custom.sh`, `release-build.sh` |
-| `.prodkit/workflows/` | Adapters that this repository itself currently enables when testing/releasing the control plane | `ci-hygiene.sh`, `ci-custom.sh`, `security-custom.sh`, `release-build.sh` |
+Consumers must not duplicate organization infrastructure such as hosted/self-hosted routing expressions, runner labels, CI/Security aggregators, CodeQL orchestration, exact-source proof orchestration, release publication state machines, or GitHub Release metadata mutation logic.
 
-The adapter sections below define the **available consumer interfaces**, not a requirement that every repository keep every adapter file active. A consumer may delete or omit an adapter only when the corresponding capability is disabled in its caller. If a capability is enabled, its configured adapter must exist and satisfy this contract.
+The control-plane workflow surface includes:
 
-The control-plane repository itself intentionally has only four `.prodkit/workflows/` files because its own CI disables Python, Node, PostgreSQL, and container adapters, while its own Security disables Python, Node, and container adapters. Central Gitleaks and source-SBOM jobs do not require consumer adapter files. `release-build.sh` is always repository-owned when Release publication is used.
+- `reusable-runner-policy.yml`;
+- `reusable-ci.yml`;
+- `reusable-security.yml`;
+- `reusable-codeql.yml`;
+- `reusable-release-proof.yml`;
+- `reusable-release-pipeline.yml`;
+- `reusable-release.yml`;
+- `reusable-release-metadata-current.yml`;
+- `reusable-release-metadata.yml`;
+- `reusable-org-audit.yml`;
+- the repository's own thin CI, Security, Release, and Organization Audit callers.
 
-The GitHub Actions UI normally surfaces the four top-level control-plane workflows (`CI`, `Security`, `Release`, and `Organization Audit`) as operator-facing workflows. The five `reusable-*.yml` files are implementation entry points invoked through `workflow_call`; `reusable-release-metadata.yml` is the presentation-repair operation of the Release family, not an additional product-level workflow.
+All cross-repository reusable workflow calls must pin an exact lowercase 40-character Git commit SHA. Floating branches and tags are not production contracts.
 
-## Control-plane pinning and runner policy
+## Lifecycle
 
-Consumer repositories must call reusable workflows through an exact lowercase 40-character Git commit SHA. Floating branches and tags are not an accepted production contract.
+The standard lifecycle is deliberately separated:
 
-All reusable workflow families accept an explicit `runner_json` target and default to GitHub-hosted Ubuntu. Generated callers implement one common runner policy for CI, Security, and Release; the control-plane Organization Audit caller implements the same selection semantics.
+1. **Pull request** — run normal `CI`, `Security`, and optional `CodeQL` feedback.
+2. **Main branch** — run `CI`, `Security`, and optional `CodeQL` for the actual merge SHA.
+3. **Release candidate** — explicitly dispatch `Trusted Release Proof` once for the intended current-main SHA.
+4. **Publication** — explicitly dispatch `Release`; publication verifies prior exact-SHA evidence before building, attesting, tagging, and publishing.
+5. **Metadata repair** — reconcile mutable GitHub Release presentation separately from immutable source/payload identity.
 
-- `PRODKIT_RUNNER_MODE=auto` selects hosted-first automatic failover for trusted events.
-- `PRODKIT_RUNNER_MODE=github-hosted` selects strict `ubuntu-latest` with no automatic self-hosted fallback.
-- `PRODKIT_RUNNER_MODE=self-hosted` selects strict `["self-hosted","Linux","X64"]` for trusted events.
-- an unset `PRODKIT_RUNNER_MODE` behaves as `auto`.
-- an unrecognized non-empty value fails safe to strict GitHub-hosted execution.
-- manual `workflow_dispatch` exposes `runner: policy | auto | github-hosted | self-hosted`; `policy` follows `PRODKIT_RUNNER_MODE`, while the other values explicitly override it for that dispatch.
-- fork-originated pull requests are always forced onto GitHub-hosted runners even when `PRODKIT_RUNNER_MODE=auto` or `self-hosted`.
+`Trusted Release Proof` must not be triggered by every pull request, ordinary main push, or `v*` tag. Tag creation must not rerun an already successful proof for the same source SHA.
 
-`PRODKIT_RUNNER_MODE` is a non-secret GitHub Actions configuration variable. It may be defined at organization or repository level; repository-level configuration can override the organization policy for a specific consumer. The value is evaluated by the caller repository before the reusable job is routed.
+The release pipeline requires successful exact-SHA main-branch `CI` and `Security` plus one successful `workflow_dispatch` run of `Trusted Release Proof` for the same current-main SHA.
 
-### Hosted-first failover contract
+## Runner policy
 
-GitHub Actions does not provide ordered `runs-on` fallback. Therefore `auto` is implemented by the thin caller using a **non-poisoning** pre-workload probe:
+`Reusable Runner Policy` is the only organization implementation of runner selection. Thin consumers request `policy`, `auto`, `github-hosted`, or `self-hosted` and consume its `runner_json` output.
 
-1. schedule a minimal `Hosted runner availability` job on `ubuntu-latest` without checking out or executing repository code;
-2. the probe uses `continue-on-error: true` and emits the job output `available=true` only if its step actually starts and completes;
-3. when that positive output exists, invoke the unchanged reusable workflow with `runner_json='"ubuntu-latest"'`;
-4. when auto policy is active but the positive output is absent, invoke that same reusable workflow with `runner_json='["self-hosted","Linux","X64"]'`;
-5. if the probe is skipped because the operator selected a strict runner mode, route directly to that strict target;
-6. if the workflow is cancelled, do not start the reusable workload.
+`PRODKIT_RUNNER_MODE` is a non-secret organization/repository Actions variable:
 
-The probe's infrastructure failure must not itself make the final CI/Security/Release result fail when the trusted fallback workload succeeds. Its only purpose is to select the execution plane.
+- unset or `auto`: hosted-first automatic failover;
+- `github-hosted`: strict hosted execution;
+- `self-hosted`: strict trusted self-hosted execution.
 
-Failover is therefore decided before product validation or release work begins. A real CI test failure, security finding, migration failure, build failure, release-check failure, or publication failure must remain terminal and must not cause automatic execution on another runner.
+For `auto`, the policy performs a repository-code-free hosted availability probe. If it emits `available=true`, the hosted lane is selected; otherwise the trusted self-hosted lane is selected. Genuine product/test/security/release failures never trigger runner switching because routing completes before the workload starts.
 
-The caller job names remain `ci`, `security`, `release`, and `audit`. Stable branch-protection identities such as `ci / CI Required` and `security / Security Required` must not change merely because failover is enabled.
+Fork-originated pull requests are forced to the hosted lane when `fork_safe` is enabled. Release operations are not fork-PR entry points and may set `fork_safe: false`.
 
-The automatic mechanism covers hosted failures where the probe cannot produce its positive availability output, including billing/account/startup failures that terminate before step 1. It cannot bypass a complete Actions control-plane outage and cannot react to a hosted job that remains indefinitely queued without allowing dependent jobs to continue. There is intentionally no automatic self-hosted-to-hosted fallback because an unavailable self-hosted runner can remain queued without producing a safe in-workflow failure signal.
+Consumers must not contain `runner-probe`, `needs.runner-probe`, `fromJSON(...)` runner-selection expressions, or hard-coded `["self-hosted","Linux","X64"]` labels. Those are control-plane implementation details.
 
-A self-hosted runner still depends on the GitHub Actions control plane for queueing and dispatch and therefore cannot bypass a complete Actions service outage.
+GitHub Actions has no native ordered `runs-on` fallback and cannot safely react to a job that remains indefinitely queued. Hosted-first fallback therefore covers failures where the hosted probe fails to produce its positive output; it does not bypass a complete Actions outage.
 
-CI and Security concurrency belongs to the thin caller so independent calls to the same reusable workflow can coexist. Reusable Release publication owns a version-scoped non-cancelling concurrency lock; release metadata repair owns its own version-scoped non-cancelling lock.
+## CI
 
-## Adapter path contract
+`reusable-ci.yml` owns matrix execution, checkout, adapter containment checks, and the stable `CI Required` aggregator. Enabled adapters must be regular non-symlink files beneath `.prodkit/workflows/`.
 
-Every **enabled** CI or Security adapter path must resolve to a regular, non-symlink file beneath the checked-out repository's `.prodkit/workflows/` directory. Absolute paths, traversal outside that directory, and symlink files are rejected before execution.
+Available adapters are:
 
-Disabled capabilities do not require their adapter file to exist. They are represented by GitHub Actions as `skipped`; an enabled capability must finish `success` to satisfy the final aggregator.
+- `ci-hygiene.sh`;
+- `ci-python.sh`, receiving `PRODKIT_PYTHON_VERSION`;
+- `ci-node.sh`, receiving `PRODKIT_NODE_VERSION`;
+- `ci-postgres.sh`, receiving isolated PostgreSQL connection variables;
+- `ci-container.sh`;
+- `ci-custom.sh`.
 
-## CI adapters
+Disabled capabilities may be skipped. Any enabled capability must succeed for `CI Required` to pass.
 
-The reusable CI contract exposes these optional consumer adapters:
+## Security
 
-- `ci-hygiene.sh`: repository structure, architecture, generated-file, migration immutability, documentation, and release metadata checks.
-- `ci-python.sh`: receives `PRODKIT_PYTHON_VERSION` and owns dependency sync plus Python checks for that version.
-- `ci-node.sh`: receives `PRODKIT_NODE_VERSION` and owns package-manager install/build/test behavior.
-- `ci-postgres.sh`: receives `PRODKIT_POSTGRES_HOST`, `PRODKIT_POSTGRES_PORT`, `PRODKIT_POSTGRES_DATABASE`, `PRODKIT_POSTGRES_USER`, and `PRODKIT_POSTGRES_PASSWORD` for an isolated PostgreSQL service.
-- `ci-container.sh`: production image build/runtime smoke.
-- `ci-custom.sh`: domain-specific gates.
+`reusable-security.yml` owns full-history Gitleaks, source SPDX 2.3 SBOM generation, dependency-audit adapters, container vulnerability scanning, custom security adapters, evidence artifacts, and the stable `Security Required` aggregator.
 
-The stable final job is `CI Required`. It accepts only `success` or `skipped` for every declared capability and fails closed on any other result.
+Repository adapters are:
 
-## Security adapters and central evidence
+- `security-python.sh`;
+- `security-node.sh`;
+- `security-container-build.sh`;
+- `security-custom.sh`.
 
-The reusable Security contract exposes these optional consumer adapters:
+A repository may provide a narrowly reviewed repository-contained Gitleaks configuration. Enabled adapter paths are containment-checked beneath `.prodkit/workflows/`.
 
-- `security-python.sh`: Python runtime dependency audit.
-- `security-node.sh`: Node runtime dependency audit.
-- `security-container-build.sh`: must build the image named by `PRODKIT_SECURITY_IMAGE`; the central workflow performs the vulnerability scan.
-- `security-custom.sh`: domain-specific security assertions.
+## CodeQL
 
-Full-history Gitleaks scanning and source SBOM generation are centrally owned. The Gitleaks scan is redacted and preserves a JSON evidence artifact even on failure. A consumer may provide an optional repository-relative `gitleaks_config_path` for reviewed false-positive allowlists; the config must be a regular, non-symlink file contained in the repository. The allowlist remains consumer-owned and must be narrowly scoped rather than disabling the central detector.
+`reusable-codeql.yml` owns the language matrix, CodeQL initialization/analysis, SARIF evidence retention, and the `CodeQL Required` aggregator. Repositories may supply `.prodkit/workflows/codeql-check.sh` to enforce their SARIF policy.
 
-The source SBOM must be SPDX 2.3. Container vulnerability scanning is centrally owned after `security-container-build.sh` produces the requested image.
+CodeQL is opt-in for repositories that require it. It is not implicitly added to every ProdKit repository.
 
-The stable final job is `Security Required`. It accepts only `success` or `skipped` and fails closed on any other result.
+## Trusted Release Proof
 
-## Release manifest
+`reusable-release-proof.yml` accepts an exact `source_sha`, requires that SHA to remain current `main`, checks out that exact commit, validates a repository-owned proof adapter beneath `.prodkit/workflows/`, runs it on the resolved trusted runner, verifies tracked source remained immutable, writes a canonical proof receipt, and uploads exact-SHA proof evidence.
 
-`.prodkit/release.json` is schema version 1 and must conform to `contracts/release-manifest.schema.json`: required blocks are `schema_version`, `version`, `notes`, and `build`; unknown properties are rejected. `version.sources` must contain at least one source. Version sources may be text, JSON, or TOML, and every declared source must equal the requested release version on the exact target SHA during publication.
+The repository adapter is normally `.prodkit/workflows/release-proof.sh`. Domain-specific browser, database, container, packaging, quality, or protocol acceptance belongs there; YAML orchestration and exact-source guarantees belong centrally.
 
-Release-note and changelog paths must remain inside the checked-out repository. The rendered release notes file and changelog heading must exist. The release build script must be a regular, non-symlink file contained in the repository.
+The proof workflow itself is explicitly dispatched. A successful run on another SHA, pull-request event, ordinary main push, or tag event is not release-candidate evidence.
 
-For metadata repair, the current `main` manifest supplies only the canonical notes-path/changelog/title-template presentation contract for the requested historical version. Metadata repair deliberately does not reinterpret current package-version sources as the historical immutable source identity; that identity is proven independently by the existing tag and supplied `source_sha`.
+## Release manifest and presentation
 
-## Release source and evidence preconditions
+`.prodkit/release.json` schema version 1 defines version sources, canonical notes, changelog heading, release build adapter, and Release name template. Unknown properties are rejected.
 
-Release publication is dispatch-only. `target_sha` must be a full lowercase 40-character SHA, must be the checked-out commit, and must still be the current configured main branch before publication proceeds.
+The organization release-presentation contract follows the ProdKit Quality reference:
 
-`required_workflows_json` is a non-empty array of workflow names. Every listed workflow must have a completed successful `push` run for exactly `target_sha`. Pull-request success, a success on another SHA, or a still-running workflow does not satisfy release evidence.
+- tag: `vX.Y.Z`;
+- GitHub Release name: `ProdKit <Repository Name> vX.Y.Z`;
+- canonical note begins `# vX.Y.Z — <milestone>`;
+- Release body is the complete canonical `docs/VX.Y.Z.md` document.
 
-Metadata repair has a different precondition because a historical release SHA is normally no longer current `main`: current `main` must be the canonical metadata source, the existing `vX.Y.Z` tag must resolve exactly to the supplied historical `source_sha`, and an already-published non-draft GitHub Release for that tag must exist.
+Quality is a release-presentation reference, not a runner-policy consumer.
 
-## Release toolchains and build adapter
+## Publication
 
-The reusable release workflow can explicitly provision release toolchains before invoking the build contract:
+`reusable-release-pipeline.yml` first verifies a successful dispatched `Trusted Release Proof` for the exact target SHA. It then delegates immutable publication to `reusable-release.yml`, which independently requires successful main `CI` and `Security` for exactly the same SHA.
 
-- `python_enabled`, `python_version`, and `uv_version` provision `uv` plus the requested Python runtime using a full-SHA-pinned setup action.
-- `node_enabled`, `node_version`, and `pnpm_version` provision Node.js plus the requested pnpm release.
-- Disabled toolchains are not provisioned. Consumers must enable only the runtimes needed by their release build.
+Publication is dispatch-only. `target_sha` must be a full lowercase 40-character SHA and still equal current configured `main`.
 
-The release build script receives:
+The consumer `release-build.sh` owns product distributables only and writes at least one flat regular payload into `RELEASE_OUTPUT_DIR`. The central workflow owns source archives, repository SBOM, release metadata, `SHA256SUMS`, attestations, immutable tag/release transaction, and remote verification.
 
-- `RELEASE_VERSION`
-- `RELEASE_TAG`
-- `TARGET_SHA`
-- `RELEASE_OUTPUT_DIR`
-- `PRODKIT_RELEASE_PYTHON_VERSION`
-- `PRODKIT_RELEASE_NODE_VERSION`
-- `PRODKIT_RELEASE_PNPM_VERSION`
+A release tag is immutable. An existing tag on another commit is a hard failure. Publication is retry-safe and draft-first. Every uploaded asset is read back and verified before publication; after publication the complete remote asset set and every checksum are independently verified again.
 
-Release builds must use locked dependency installation where the ecosystem supports it. A consumer must not rely on mutable preinstalled language runtimes or package-manager versions on a self-hosted runner when the central toolchain inputs can provision them explicitly.
+## Metadata repair
 
-Metadata repair never invokes the consumer build adapter and never rebuilds, uploads, deletes, replaces, or re-attests release payloads.
+`reusable-release-metadata-current.yml` selects either an explicit published version/source pair or the current workspace version/tag, then delegates to guarded `reusable-release-metadata.yml`.
 
-## Release artifact ownership
+Metadata repair uses current `main` only as the canonical presentation source. It requires the existing immutable tag to resolve exactly to the supplied historical `source_sha`, verifies the published `SHA256SUMS` and every payload, snapshots asset identity/publication flags, PATCHes only Release `name` and `body`, then re-verifies the tag, assets, checksums, draft/prerelease state, and canonical presentation.
 
-The consumer build adapter must place at least one payload in `RELEASE_OUTPUT_DIR`. Its output must be a flat set of regular, non-symlink files. Directories, symlinks, and an empty consumer payload set are rejected before central proof files are added.
+When explicitly enabled, current-release metadata orchestration may also normalize every published SemVer Release **name** from `release.name_template`. That operation snapshots and preserves each release body, tag, publication flags, and asset identity; it changes no payload and no historical note body.
 
-The following names are central-workflow-owned and must not be emitted by the consumer build adapter:
+Metadata repair cannot create or move tags, create a missing Release, rebuild/upload/delete/replace assets, alter checksums, or change draft/prerelease state.
 
-- `SHA256SUMS`
-- `release-metadata.json`
-- `repository.spdx.json`
-- the exact source archive name `<repository>-<tag>.tar.gz`
+## Bootstrap surface
 
-The central workflow may add the exact Git source archive and SPDX SBOM, then writes `release-metadata.json` and `SHA256SUMS`. It rechecks that the final artifact directory contains only flat regular files and verifies `SHA256SUMS` locally before publication.
+`bootstrap_consumer.py` installs thin callers for CI, Security, Trusted Release Proof, Release, and Release Metadata, plus the complete adapter catalog. `--include-codeql` additionally installs the CodeQL caller.
 
-## Release publication state machine
-
-A release tag is immutable: an existing tag on another commit is a hard failure. Publication is retry-safe and draft-first. A workflow-owned draft for the same tag is reconciled deterministically; multiple releases for one tag require manual reconciliation.
-
-Before publishing, every uploaded draft asset is read back and verified against its local SHA-256 digest. After publication, `SHA256SUMS` is treated as the published authority: the complete remote asset set and every payload checksum are verified again, including GitHub's asset digest metadata when GitHub supplies it.
-
-When enabled, provenance attestation is generated from the central checksum file. Re-running an already published release is idempotent only if the immutable tag, complete asset set, `SHA256SUMS`, downloaded payload hashes, and available GitHub digest metadata all verify.
-
-## Release metadata repair
-
-GitHub Release presentation is mutable even when release source and payload identity are immutable. When a published release has the correct tag and payload but its title or notes drift from the organization contract, consumers must use `reusable-release-metadata.yml` rather than moving the tag, deleting/recreating the Release, or rebuilding assets.
-
-The repair workflow derives the expected Release name from `.prodkit/release.json` `release.name_template` and the expected body from the rendered `notes.path_template` for the requested version on current `main`. It then:
-
-1. verifies current checkout is current `main`;
-2. resolves lightweight or directly annotated `vX.Y.Z` tags and requires the tag commit to equal `source_sha`;
-3. requires an existing published, non-draft Release for the same tag;
-4. verifies `SHA256SUMS`, the exact remote asset set, every downloaded payload SHA-256, and GitHub-provided asset digests when present;
-5. snapshots every asset's ID, name, size, and digest plus the release prerelease state;
-6. PATCHes only GitHub Release `name` and `body` when either differs;
-7. re-fetches the Release and tag and proves the tag SHA, draft/prerelease state, asset identity, exact checksum set, and every payload hash are unchanged.
-
-A metadata repair is therefore a presentation correction, not a new release. It cannot move a tag, modify source identity, replace assets, alter checksums, change draft/prerelease state, or create a missing Release.
+Generated callers contain only lifecycle triggers, minimal repository capability configuration, a call to `Reusable Runner Policy`, and the appropriate reusable workflow call. Runner implementation details must remain absent.

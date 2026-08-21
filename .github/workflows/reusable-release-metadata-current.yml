@@ -1,0 +1,251 @@
+name: Reusable Current Release Metadata
+
+on:
+  workflow_call:
+    inputs:
+      runner_json:
+        description: JSON value accepted by runs-on, normally from Reusable Runner Policy.
+        required: true
+        type: string
+      version:
+        description: Optional explicit published SemVer without v prefix.
+        required: false
+        type: string
+        default: ""
+      source_sha:
+        description: Optional explicit immutable tagged source SHA.
+        required: false
+        type: string
+        default: ""
+      manifest_path:
+        required: false
+        type: string
+        default: .prodkit/release.json
+      main_branch:
+        required: false
+        type: string
+        default: main
+      environment:
+        required: false
+        type: string
+        default: release
+      normalize_all_titles:
+        description: Normalize every published SemVer Release name from release.name_template after repair.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: current-release-metadata-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  select:
+    name: Select published release
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.select.outputs.version }}
+      source_sha: ${{ steps.select.outputs.source_sha }}
+      exists: ${{ steps.select.outputs.exists }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.main_branch }}
+
+      - id: select
+        name: Resolve immutable release source
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          MAIN_BRANCH: ${{ inputs.main_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$MAIN_BRANCH" --tags --force
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$MAIN_BRANCH")"
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess, tomllib
+          root = pathlib.Path.cwd().resolve()
+          requested_version = os.environ["REQUESTED_VERSION"]
+          requested_sha = os.environ["REQUESTED_SOURCE_SHA"]
+          semver = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+
+          def inside(value: str) -> pathlib.Path:
+              raw = pathlib.Path(value)
+              if raw.is_absolute():
+                  raise SystemExit(f"absolute path is not allowed: {value}")
+              path = (root / raw).resolve()
+              if path == root or root not in path.parents:
+                  raise SystemExit(f"path escapes repository: {value}")
+              return path
+
+          if bool(requested_version) != bool(requested_sha):
+              raise SystemExit("version and source_sha must be supplied together")
+
+          if requested_version:
+              if not semver.fullmatch(requested_version):
+                  raise SystemExit("invalid requested version")
+              if not re.fullmatch(r"[0-9a-f]{40}", requested_sha):
+                  raise SystemExit("invalid requested source SHA")
+              version = requested_version
+              source_sha = requested_sha
+          else:
+              manifest = json.loads(inside(os.environ["MANIFEST_PATH"]).read_text(encoding="utf-8"))
+              sources = manifest.get("version", {}).get("sources", [])
+              if not sources:
+                  raise SystemExit("release manifest has no version sources")
+              src = sources[0]
+              path = inside(src["path"])
+              typ = src["type"]
+              selector = src.get("selector")
+              if typ == "text":
+                  version = path.read_text(encoding="utf-8").strip()
+              elif typ == "json":
+                  value = json.loads(path.read_text(encoding="utf-8"))
+                  for part in (selector or "version").split("."):
+                      value = value[part]
+                  version = str(value)
+              elif typ == "toml":
+                  value = tomllib.loads(path.read_text(encoding="utf-8"))
+                  for part in (selector or "project.version").split("."):
+                      value = value[part]
+                  version = str(value)
+              else:
+                  raise SystemExit(f"unsupported version source: {typ}")
+              if not semver.fullmatch(version):
+                  raise SystemExit(f"invalid workspace version: {version}")
+              source_sha = ""
+
+          tag = f"v{version}"
+          result = subprocess.run(
+              ["git", "rev-list", "-n", "1", tag],
+              text=True,
+              capture_output=True,
+              check=False,
+          )
+          exists = result.returncode == 0 and bool(result.stdout.strip())
+          resolved = result.stdout.strip() if exists else ""
+          if requested_sha and resolved != requested_sha:
+              raise SystemExit(f"immutable tag {tag} does not resolve to requested source SHA")
+          if not requested_sha:
+              source_sha = resolved
+
+          output = pathlib.Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as out:
+              out.write(f"version={version}\n")
+              out.write(f"source_sha={source_sha}\n")
+              out.write(f"exists={'true' if exists else 'false'}\n")
+          print(f"selected {tag}: exists={exists}; source={source_sha or '-'}")
+          PY
+
+  repair:
+    name: repair-metadata
+    needs: select
+    if: needs.select.outputs.exists == 'true'
+    uses: ./.github/workflows/reusable-release-metadata.yml
+    with:
+      version: ${{ needs.select.outputs.version }}
+      source_sha: ${{ needs.select.outputs.source_sha }}
+      runner_json: ${{ inputs.runner_json }}
+      manifest_path: ${{ inputs.manifest_path }}
+      main_branch: ${{ inputs.main_branch }}
+      environment: ${{ inputs.environment }}
+
+  normalize-titles:
+    name: Normalize published release titles
+    needs: repair
+    if: inputs.normalize_all_titles && needs.repair.result == 'success'
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MANIFEST_PATH: ${{ inputs.manifest_path }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.main_branch }}
+
+      - name: Normalize SemVer Release names only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, urllib.request
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          manifest = json.loads(pathlib.Path(os.environ["MANIFEST_PATH"]).read_text(encoding="utf-8"))
+          template = manifest.get("release", {}).get("name_template", "{repository} {tag}")
+          semver = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-release-title-normalizer",
+          }
+          api = f"https://api.github.com/repos/{repo}"
+
+          def request(method, url, payload=None):
+              data = None
+              h = dict(headers)
+              if payload is not None:
+                  data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                  h["Content-Type"] = "application/json"
+              req = urllib.request.Request(url, data=data, headers=h, method=method)
+              with urllib.request.urlopen(req, timeout=120) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          releases = []
+          page = 1
+          while True:
+              batch = request("GET", f"{api}/releases?per_page=100&page={page}")
+              releases.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+
+          changed = 0
+          for release in releases:
+              tag = release.get("tag_name")
+              if release.get("draft") is not False or not isinstance(tag, str) or not semver.fullmatch(tag):
+                  continue
+              expected = template.format(
+                  repository=repo.split("/", 1)[-1],
+                  version=tag[1:],
+                  tag=tag,
+              )
+              if release.get("name") == expected:
+                  continue
+              before = {
+                  "tag_name": release.get("tag_name"),
+                  "body": release.get("body"),
+                  "draft": release.get("draft"),
+                  "prerelease": release.get("prerelease"),
+                  "assets": sorted(
+                      (a.get("id"), a.get("name"), a.get("size"), a.get("digest"))
+                      for a in release.get("assets", [])
+                  ),
+              }
+              updated = request("PATCH", f"{api}/releases/{release['id']}", {"name": expected})
+              after = {
+                  "tag_name": updated.get("tag_name"),
+                  "body": updated.get("body"),
+                  "draft": updated.get("draft"),
+                  "prerelease": updated.get("prerelease"),
+                  "assets": sorted(
+                      (a.get("id"), a.get("name"), a.get("size"), a.get("digest"))
+                      for a in updated.get("assets", [])
+                  ),
+              }
+              if updated.get("name") != expected or after != before:
+                  raise SystemExit(f"non-title Release metadata changed for {tag}")
+              changed += 1
+          print(f"release titles canonical; changed={changed}")
+          PY

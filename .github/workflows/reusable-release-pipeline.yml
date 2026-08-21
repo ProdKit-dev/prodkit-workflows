@@ -1,0 +1,147 @@
+name: Reusable Release Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      target_sha:
+        description: Exact current main SHA to publish.
+        required: true
+        type: string
+      runner_json:
+        description: JSON value accepted by runs-on, normally from Reusable Runner Policy.
+        required: true
+        type: string
+      proof_workflow:
+        required: false
+        type: string
+        default: Trusted Release Proof
+      required_push_workflows_json:
+        description: Successful push workflows required on the exact target SHA before publication.
+        required: false
+        type: string
+        default: '["CI","Security"]'
+      prerelease:
+        required: false
+        type: boolean
+        default: false
+      python_enabled:
+        required: false
+        type: boolean
+        default: false
+      python_version:
+        required: false
+        type: string
+        default: "3.12"
+      uv_version:
+        required: false
+        type: string
+        default: "0.10.0"
+      node_enabled:
+        required: false
+        type: boolean
+        default: false
+      node_version:
+        required: false
+        type: string
+        default: "24"
+      pnpm_version:
+        required: false
+        type: string
+        default: "11.21.0"
+      generate_sbom:
+        required: false
+        type: boolean
+        default: true
+      attest:
+        required: false
+        type: boolean
+        default: true
+      environment:
+        required: false
+        type: string
+        default: release
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: release-pipeline-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  proof-gate:
+    name: Verify release-candidate proof
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: ${{ inputs.target_sha }}
+      PROOF_WORKFLOW: ${{ inputs.proof_workflow }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify successful dispatched proof for exact SHA
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          sha = os.environ["TARGET_SHA"]
+          if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
+              raise SystemExit("target_sha must be an exact lowercase 40-character commit SHA")
+          repo = os.environ["GITHUB_REPOSITORY"]
+          workflow = os.environ["PROOF_WORKFLOW"]
+          token = os.environ["GH_TOKEN"]
+          params = urllib.parse.urlencode(
+              {"head_sha": sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}
+          )
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runs?{params}",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "prodkit-workflows-release-proof-gate",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=120) as response:
+              runs = json.load(response).get("workflow_runs", [])
+          matches = [
+              run
+              for run in runs
+              if run.get("name") == workflow
+              and run.get("head_sha") == sha
+              and run.get("event") == "workflow_dispatch"
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+          ]
+          if not matches:
+              raise SystemExit(
+                  f"missing successful workflow_dispatch {workflow!r} proof for exact SHA {sha}"
+              )
+          print(f"release-candidate proof: {matches[0].get('html_url')}")
+          PY
+
+  publish:
+    name: publish
+    needs: proof-gate
+    uses: ./.github/workflows/reusable-release.yml
+    with:
+      version: ${{ inputs.version }}
+      target_sha: ${{ inputs.target_sha }}
+      prerelease: ${{ inputs.prerelease }}
+      runner_json: ${{ inputs.runner_json }}
+      required_workflows_json: ${{ inputs.required_push_workflows_json }}
+      python_enabled: ${{ inputs.python_enabled }}
+      python_version: ${{ inputs.python_version }}
+      uv_version: ${{ inputs.uv_version }}
+      node_enabled: ${{ inputs.node_enabled }}
+      node_version: ${{ inputs.node_version }}
+      pnpm_version: ${{ inputs.pnpm_version }}
+      generate_sbom: ${{ inputs.generate_sbom }}
+      attest: ${{ inputs.attest }}
+      environment: ${{ inputs.environment }}

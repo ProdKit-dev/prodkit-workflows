@@ -11,14 +11,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 def check(security_only: bool = False) -> list[str]:
     errors: list[str] = []
 
-    # JSON integrity.
     for path in ROOT.rglob("*.json"):
         try:
             json.loads(path.read_text())
         except Exception as exc:
             errors.append(f"{path.relative_to(ROOT)}: invalid JSON: {exc}")
 
-    # Text hygiene and accidental credentials.
     secret_patterns = [
         re.compile(r"ghp_[A-Za-z0-9]{30,}"),
         re.compile(r"github_pat_[A-Za-z0-9_]{30,}"),
@@ -42,10 +40,17 @@ def check(security_only: bool = False) -> list[str]:
 
     if not security_only:
         expected = [
+            ".github/workflows/reusable-runner-policy.yml",
             ".github/workflows/reusable-ci.yml",
             ".github/workflows/reusable-security.yml",
+            ".github/workflows/reusable-codeql.yml",
+            ".github/workflows/reusable-release-proof.yml",
+            ".github/workflows/reusable-release-pipeline.yml",
             ".github/workflows/reusable-release.yml",
+            ".github/workflows/reusable-release-metadata-current.yml",
+            ".github/workflows/reusable-release-metadata.yml",
             "contracts/release-manifest.schema.json",
+            "docs/LIFECYCLE.md",
             "rulesets/org-main.json",
             "rulesets/org-release-tags.json",
         ]
@@ -53,8 +58,6 @@ def check(security_only: bool = False) -> list[str]:
             if not (ROOT / relative).is_file():
                 errors.append(f"missing {relative}")
 
-        # All production third-party Action refs must be full SHA. Local uses are allowed.
-        # Templates intentionally contain a replacement sentinel.
         for path in (ROOT / ".github/workflows").glob("*.yml"):
             for line_number, line in enumerate(path.read_text().splitlines(), 1):
                 match = re.search(r"\buses:\s*([^\s#]+)", line)
@@ -68,8 +71,6 @@ def check(security_only: bool = False) -> list[str]:
                         f"{path.relative_to(ROOT)}:{line_number}: action/workflow not full-SHA pinned: {ref}"
                     )
 
-        # Organization ruleset recipes must be safe to import. Import must never
-        # immediately enforce against ~ALL before repository targeting is reviewed.
         for relative in ("rulesets/org-main.json", "rulesets/org-release-tags.json"):
             payload = json.loads((ROOT / relative).read_text())
             if payload.get("source_type") != "Organization":
