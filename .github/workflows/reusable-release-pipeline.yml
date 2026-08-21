@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: Trusted Release Proof
+      required_push_workflows_json:
+        description: Successful push workflows required on the exact target SHA before publication.
+        required: false
+        type: string
+        default: '["CI","Security"]'
       prerelease:
         required: false
         type: boolean
@@ -130,7 +135,7 @@ jobs:
       target_sha: ${{ inputs.target_sha }}
       prerelease: ${{ inputs.prerelease }}
       runner_json: ${{ inputs.runner_json }}
-      required_workflows_json: '["CI","Security"]'
+      required_workflows_json: ${{ inputs.required_push_workflows_json }}
       python_enabled: ${{ inputs.python_enabled }}
       python_version: ${{ inputs.python_version }}
       uv_version: ${{ inputs.uv_version }}
