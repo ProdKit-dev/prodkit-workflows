@@ -61,7 +61,32 @@ jobs:
     name: Resolve runner lane
     needs: probe
     if: always() && !cancelled()
-    runs-on: ${{ fromJSON(((((inputs.fork_safe == false) || (github.event_name != 'pull_request') || (github.event.pull_request.head.repo.full_name == github.repository)) && ((inputs.mode == 'self-hosted') || ((inputs.mode == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')) || (((inputs.mode == 'auto') || ((inputs.mode == 'policy') && ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto')))) && (needs.probe.outputs.available != 'true')))) && inputs.self_hosted_runner_json || inputs.hosted_runner_json) }}
+    runs-on: >-
+      ${{ fromJSON(
+        (
+          (
+            (inputs.fork_safe == false) ||
+            (github.event_name != 'pull_request') ||
+            (github.event.pull_request.head.repo.full_name == github.repository)
+          ) &&
+          (
+            (inputs.mode == 'self-hosted') ||
+            ((inputs.mode == 'policy') && (vars.PRODKIT_RUNNER_MODE == 'self-hosted')) ||
+            (
+              (
+                (inputs.mode == 'auto') ||
+                (
+                  (inputs.mode == 'policy') &&
+                  ((vars.PRODKIT_RUNNER_MODE == '') || (vars.PRODKIT_RUNNER_MODE == 'auto'))
+                )
+              ) &&
+              (needs.probe.outputs.available != 'true')
+            )
+          )
+        ) &&
+        inputs.self_hosted_runner_json ||
+        inputs.hosted_runner_json
+      ) }}
     timeout-minutes: 5
     outputs:
       runner_json: ${{ steps.resolve.outputs.runner_json }}
