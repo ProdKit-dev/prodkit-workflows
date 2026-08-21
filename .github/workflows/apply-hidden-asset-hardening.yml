@@ -49,9 +49,6 @@ jobs:
               response=put(path,text.replace(old,new,1),message)
               return response['content']['sha']
 
-          # Stage the workflow as an ordinary repository blob. GITHUB_TOKEN cannot
-          # modify .github/workflows directly; the connected GitHub identity installs
-          # this exact blob into the workflow path after this job succeeds.
           _,workflow=read('.github/workflows/reusable-release.yml')
           old="          for p in entries:\n              if p.name in reserved: raise SystemExit(f'consumer emitted central-owned artifact: {p.name}')\n              if p.is_symlink() or not p.is_file(): raise SystemExit(f'consumer release payload must be a flat regular file: {p.name}')\n"
           new="          for p in entries:\n              if p.name in reserved: raise SystemExit(f'consumer emitted central-owned artifact: {p.name}')\n              if p.name.startswith('.'):\n                  raise SystemExit(f'consumer release payload must not use hidden asset names: {p.name}')\n              if p.is_symlink() or not p.is_file(): raise SystemExit(f'consumer release payload must be a flat regular file: {p.name}')\n"
@@ -63,8 +60,8 @@ jobs:
 
           patch(
               'scripts/test_contracts.py',
-              "    # Compatibility-only workflow for already-pinned consumers.\n    release_pipeline = (ROOT / \".github/workflows/reusable-release-pipeline.yml\").read_text()\n",
-              "    release = (ROOT / \".github/workflows/reusable-release.yml\").read_text()\n    require(\n        release,\n        (\n            \"p.name.startswith('.')\",\n            \"consumer release payload must not use hidden asset names\",\n        ),\n        name=\"Reusable Release\",\n    )\n\n    # Compatibility-only workflow for already-pinned consumers.\n    release_pipeline = (ROOT / \".github/workflows/reusable-release-pipeline.yml\").read_text()\n",
+              "    # Compatibility-only wrapper for already-pinned consumers.\n    release_pipeline = (ROOT / \".github/workflows/reusable-release-pipeline.yml\").read_text()\n",
+              "    release = (ROOT / \".github/workflows/reusable-release.yml\").read_text()\n    require(\n        release,\n        (\n            \"p.name.startswith('.')\",\n            \"consumer release payload must not use hidden asset names\",\n        ),\n        name=\"Reusable Release\",\n    )\n\n    # Compatibility-only wrapper for already-pinned consumers.\n    release_pipeline = (ROOT / \".github/workflows/reusable-release-pipeline.yml\").read_text()\n",
               'test(release): lock hidden asset-name guard',
           )
           patch(
