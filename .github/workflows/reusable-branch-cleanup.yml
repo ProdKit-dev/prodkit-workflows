@@ -60,6 +60,7 @@ jobs:
           import urllib.request
 
           repo = os.environ["GITHUB_REPOSITORY"]
+          repo_owner = repo.split("/", 1)[0]
           token = os.environ["GH_TOKEN"]
           expected_default_sha = os.environ["EXPECTED_DEFAULT_SHA"]
           dry_run = os.environ["DRY_RUN"].lower() == "true"
@@ -85,11 +86,26 @@ jobs:
                       return 404, None
                   raise SystemExit(f"GitHub API {method} {path} failed: HTTP {exc.code}: {detail[:500]}") from exc
 
-          def ref_path(branch: str) -> str:
+          def read_ref_path(branch: str) -> str:
+              return "/git/ref/" + urllib.parse.quote(f"heads/{branch}", safe="/")
+
+          def delete_ref_path(branch: str) -> str:
               return "/git/refs/" + urllib.parse.quote(f"heads/{branch}", safe="/")
 
           def branch_path(branch: str) -> str:
               return "/branches/" + urllib.parse.quote(branch, safe="")
+
+          def has_open_pr(branch: str) -> bool:
+              query = urllib.parse.urlencode(
+                  {"state": "open", "head": f"{repo_owner}:{branch}", "per_page": 100}
+              )
+              _, pulls = call("GET", f"/pulls?{query}")
+              for pull in pulls:
+                  head = pull.get("head") or {}
+                  head_repo = (head.get("repo") or {}).get("full_name")
+                  if head_repo == repo and head.get("ref") == branch:
+                      return True
+              return False
 
           def validate_branch_name(branch: str) -> None:
               if not branch or len(branch) > 255:
@@ -126,26 +142,13 @@ jobs:
 
           _, repository = call("GET", "")
           default_branch = repository["default_branch"]
-          default_ref = ref_path(default_branch)
+          default_ref = read_ref_path(default_branch)
           _, default_obj = call("GET", default_ref)
           current_default_sha = default_obj["object"]["sha"]
           if current_default_sha != expected_default_sha:
               raise SystemExit(
                   f"default branch moved: expected {expected_default_sha}, current {current_default_sha}"
               )
-
-          open_heads = set()
-          page = 1
-          while True:
-              _, pulls = call("GET", f"/pulls?state=open&per_page=100&page={page}")
-              for pull in pulls:
-                  head = pull.get("head") or {}
-                  head_repo = (head.get("repo") or {}).get("full_name")
-                  if head_repo == repo and head.get("ref"):
-                      open_heads.add(head["ref"])
-              if len(pulls) < 100:
-                  break
-              page += 1
 
           evidence = {
               "repository": repo,
@@ -167,7 +170,7 @@ jobs:
               if status == 404:
                   evidence["results"].append({"branch": branch, "state": "already_absent"})
                   continue
-              if branch in open_heads:
+              if has_open_pr(branch):
                   safety_failures.append((branch, "branch is the head of an open pull request"))
                   continue
               if info.get("protected"):
@@ -228,8 +231,14 @@ jobs:
                   result_by_branch[branch]["state"] = "not_deleted_default_moved"
                   write_evidence()
                   raise SystemExit("default branch moved during cleanup; refusing further mutation")
-              call("DELETE", ref_path(branch))
-              status, _ = call("GET", ref_path(branch), allow_404=True)
+              if has_open_pr(branch):
+                  result_by_branch[branch]["state"] = "not_deleted_open_pr_created"
+                  write_evidence()
+                  raise SystemExit(
+                      f"branch became the head of an open pull request during cleanup: {branch}"
+                  )
+              call("DELETE", delete_ref_path(branch))
+              status, _ = call("GET", read_ref_path(branch), allow_404=True)
               if status != 404:
                   result_by_branch[branch]["state"] = "verification_failed"
                   write_evidence()
