@@ -268,7 +268,7 @@ jobs:
           bash "$CONTRACT_SCRIPT"
 
       - name: Verify Security contract
-        if: always()
+        if: always() && !cancelled()
         env:
           SECRETS: ${{ steps.secrets.outcome }}
           GITLEAKS_ARTIFACT: ${{ steps.gitleaks_artifact.outcome }}

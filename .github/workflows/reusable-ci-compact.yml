@@ -349,7 +349,7 @@ jobs:
           bash "$CONTRACT_SCRIPT"
 
       - name: Verify CI contract
-        if: always()
+        if: always() && !cancelled()
         env:
           HYGIENE: ${{ steps.hygiene.outcome }}
           SETUP_UV: ${{ steps.setup_uv.outcome }}
