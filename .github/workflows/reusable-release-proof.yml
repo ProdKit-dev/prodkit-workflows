@@ -87,9 +87,12 @@ jobs:
       PRODKIT_PROOF_PYTHON_VERSION: ${{ inputs.python_version }}
       PRODKIT_PROOF_NODE_VERSION: ${{ inputs.node_version }}
       PRODKIT_PROOF_PNPM_VERSION: ${{ inputs.pnpm_version }}
-      PRODKIT_PROOF_OUTPUT_DIR: ${{ runner.temp }}/prodkit-release-proof
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Initialize proof evidence path
+        shell: bash
+        run: echo "PRODKIT_PROOF_OUTPUT_DIR=$RUNNER_TEMP/prodkit-release-proof" >> "$GITHUB_ENV"
+
       - name: Validate release-candidate request
         shell: bash
         run: |
