@@ -27,7 +27,7 @@ jobs:
       python_version: "3.12"
       uv_version: "0.10.0"
       node_enabled: true
-      node_version: "22"
+      node_version: "24"
       pnpm_version: "11.21.0"
 
   promote:
