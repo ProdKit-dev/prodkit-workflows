@@ -7,12 +7,13 @@ on:
       - ".github/workflows/ops-v011-release-finalize.yml"
 
 permissions:
-  actions: read
+  actions: write
   contents: read
+  pull-requests: write
 
 jobs:
-  verify-release:
-    name: verify immutable v0.1.1 publication
+  cleanup-operator:
+    name: close and clean disposable operator
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'ops/v0.1.1-release-finalize' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -21,110 +22,79 @@ jobs:
       CURRENT_MAIN_SHA: 9105840ed105ed55830ff7015f1b5ae14657f5b5
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Verify exact release chain and published assets
+      - name: Validate release, close PR, and dispatch canonical cleanup
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json
           import os
-          import urllib.error
-          import urllib.parse
           import urllib.request
 
           repo = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
-          release_sha = os.environ["RELEASE_SHA"]
-          current_main_sha = os.environ["CURRENT_MAIN_SHA"]
           api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+          release_sha = os.environ["RELEASE_SHA"]
+          current_main = os.environ["CURRENT_MAIN_SHA"]
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/vnd.github+json",
               "X-GitHub-Api-Version": "2022-11-28",
-              "User-Agent": "prodkit-workflows-v011-release-verifier",
+              "User-Agent": "prodkit-workflows-v011-operator-cleanup",
           }
 
-          def request(path: str):
-              req = urllib.request.Request(f"{api}/repos/{repo}{path}", headers=headers)
-              try:
-                  with urllib.request.urlopen(req, timeout=120) as response:
-                      raw = response.read()
-                      return response.status, json.loads(raw) if raw else None
-              except urllib.error.HTTPError as exc:
-                  if exc.code == 404:
-                      return 404, None
-                  raise
+          def request(method: str, path: str, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(
+                  f"{api}/repos/{repo}{path}",
+                  data=data,
+                  headers=headers,
+                  method=method,
+              )
+              with urllib.request.urlopen(req, timeout=120) as response:
+                  raw = response.read()
+                  return response.status, json.loads(raw) if raw else None
 
-          _, main = request("/branches/main")
-          actual_main = main.get("commit", {}).get("sha")
-          if actual_main != current_main_sha:
-              raise SystemExit(f"unexpected current main: {actual_main}")
+          _, main = request("GET", "/branches/main")
+          if main.get("commit", {}).get("sha") != current_main:
+              raise SystemExit("main moved; refusing operator cleanup")
 
-          params = urllib.parse.urlencode({"head_sha": release_sha, "per_page": 100})
-          _, payload = request(f"/actions/runs?{params}")
-          runs = payload.get("workflow_runs", [])
+          _, tag = request("GET", "/git/ref/tags/v0.1.1")
+          obj = tag.get("object", {})
+          if obj.get("type") != "commit" or obj.get("sha") != release_sha:
+              raise SystemExit("v0.1.1 tag identity changed")
 
-          required = (
-              ("CI", ".github/workflows/ci.yml", "push"),
-              ("Security", ".github/workflows/security.yml", "push"),
-              ("Trusted Release Proof", ".github/workflows/trusted-release-proof.yml", "workflow_dispatch"),
-              ("Release", ".github/workflows/release.yml", "workflow_dispatch"),
-              ("Release Verification", ".github/workflows/release-verification.yml", "workflow_run"),
-          )
-          selected = {}
-          for label, path, event in required:
-              matches = [
-                  run for run in runs
-                  if run.get("path") == path
-                  and run.get("head_sha") == release_sha
-                  and run.get("event") == event
-                  and run.get("status") == "completed"
-                  and run.get("conclusion") == "success"
-              ]
-              if not matches:
-                  raise SystemExit(f"missing successful {label} run for {release_sha}")
-              run = max(matches, key=lambda item: int(item["id"]))
-              selected[label] = run
-              print(f"{label.upper().replace(' ', '_')}_RUN_ID={run['id']}")
-
-          promotions = [
-              run for run in runs
-              if run.get("path") == ".github/workflows/release-promotion.yml"
-              and run.get("head_sha") == release_sha
-              and run.get("event") == "workflow_run"
-          ]
-          if promotions:
-              run = max(promotions, key=lambda item: int(item["id"]))
-              print(f"RELEASE_PROMOTION_RUN_ID={run['id']}")
-              print(f"RELEASE_PROMOTION_STATUS={run.get('status')}")
-              print(f"RELEASE_PROMOTION_CONCLUSION={run.get('conclusion')}")
-          else:
-              print("RELEASE_PROMOTION=not-recorded-for-historical-v0.1.1")
-
-          tag_status, tag = request("/git/ref/tags/v0.1.1")
-          if tag_status != 200:
-              raise SystemExit("v0.1.1 tag is missing")
-          tag_object = tag.get("object", {})
-          if tag_object.get("type") != "commit" or tag_object.get("sha") != release_sha:
-              raise SystemExit(f"v0.1.1 does not resolve directly to {release_sha}: {tag_object}")
-          print(f"TAG_SHA={release_sha}")
-
-          release_status, published = request("/releases/tags/v0.1.1")
-          if release_status != 200:
-              raise SystemExit("v0.1.1 GitHub Release is missing")
-          if published.get("draft") or published.get("prerelease"):
-              raise SystemExit("v0.1.1 release must be published, non-draft, non-prerelease")
-          names = sorted(asset.get("name", "") for asset in published.get("assets", []))
-          required_assets = {
+          _, release = request("GET", "/releases/tags/v0.1.1")
+          if release.get("draft") or release.get("prerelease"):
+              raise SystemExit("v0.1.1 release is not final")
+          expected = {
               "SHA256SUMS",
               "prodkit-workflows-contracts-v0.1.1.tar.gz",
               "prodkit-workflows-v0.1.1.tar.gz",
               "release-metadata.json",
               "repository.spdx.json",
           }
-          if set(names) != required_assets:
-              raise SystemExit(f"unexpected v0.1.1 asset set: {names}")
-          print(f"GITHUB_RELEASE_ID={published['id']}")
-          print("ASSETS=" + ",".join(names))
-          print("V0_1_1_RELEASE_VERIFIED=true")
+          actual = {asset.get("name") for asset in release.get("assets", [])}
+          if actual != expected:
+              raise SystemExit(f"v0.1.1 asset set drifted: {sorted(actual)}")
+
+          status, _ = request("PATCH", "/pulls/35", {"state": "closed"})
+          if status != 200:
+              raise SystemExit(f"unexpected PR close status {status}")
+          print("PR_35_CLOSED=true")
+
+          status, _ = request(
+              "POST",
+              "/actions/workflows/branch-cleanup.yml/dispatches",
+              {
+                  "ref": "main",
+                  "inputs": {
+                      "branches_json": '["ops/v0.1.1-release-finalize"]',
+                      "dry_run": "false",
+                  },
+              },
+          )
+          if status != 204:
+              raise SystemExit(f"unexpected cleanup dispatch status {status}")
+          print("CANONICAL_CLEANUP_DISPATCHED=true")
           PY
