@@ -63,3 +63,5 @@ jobs:
           call('DELETE',f'/contents/{enc}',{'message':'chore: remove transient patch operator','sha':self_sha,'branch':branch})
           print('patched compact cancellation diagnostics and removed transient operator')
           PY
+
+# retrigger after workflow registration
