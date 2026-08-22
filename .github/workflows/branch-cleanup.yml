@@ -12,6 +12,11 @@ on:
         required: true
         default: true
         type: boolean
+      expected_default_sha:
+        description: Optional exact default-branch SHA reviewed by an upstream gate
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +29,6 @@ jobs:
     uses: ./.github/workflows/reusable-branch-cleanup.yml
     with:
       branches_json: ${{ inputs.branches_json }}
-      expected_default_sha: ${{ github.sha }}
+      expected_default_sha: ${{ inputs.expected_default_sha != '' && inputs.expected_default_sha || github.sha }}
       dry_run: ${{ inputs.dry_run }}
       runner_json: '"ubuntu-latest"'
