@@ -4,7 +4,7 @@ This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. Reu
 
 ## Ownership boundary
 
-`prodkit-workflows` owns reusable workload implementation: CI/Security aggregation, toolchain setup, evidence generation, exact-source proof mechanics, guarded publication, metadata repair, CodeQL orchestration, and organization audit.
+`prodkit-workflows` owns reusable workload implementation: CI/Security aggregation, toolchain setup, evidence generation, exact-source proof mechanics, completed-proof promotion, guarded publication, metadata repair, CodeQL orchestration, and organization audit.
 
 Consumer repositories own:
 
@@ -27,6 +27,7 @@ Normative reusable workloads:
 - `reusable-security.yml` — expanded compatibility Security;
 - `reusable-codeql.yml`;
 - `reusable-release-proof.yml`;
+- `reusable-release-promote.yml`;
 - `reusable-release.yml`;
 - `reusable-release-verification.yml`;
 - `reusable-release-metadata-current.yml`;
@@ -65,12 +66,15 @@ A workload gets one runner target. Product/security/release failures never cause
 
 1. **Pull request** — CI, Security, optional CodeQL.
 2. **Main** — exact-main CI and Security certify the merge SHA.
-3. **Release candidate** — dispatch `Trusted Release Proof`; it verifies those permanent gates, runs only release-specific acceptance, and produces the promotable repository payload once.
-4. **Publication** — proof promotion dispatches `Release`; Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.
-5. **Verification** — `Release Verification` independently checks the immutable published transaction.
-6. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
+3. **Release candidate** — dispatch `Trusted Release Proof`; it verifies those permanent gates, runs only release-specific acceptance, and produces the promotable repository payload once. The proof caller must not dispatch Release itself.
+4. **Promotion** — a separate `Release Promotion` caller is triggered by `workflow_run` only after `Trusted Release Proof` is `completed` with `success`; it carries the completed proof's `head_sha` into the bounded reusable promotion workload and exits after idempotently dispatching Release.
+5. **Publication** — Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.
+6. **Verification** — `Release Verification` independently checks the immutable published transaction.
+7. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
 
-Operators do not manually copy source/target SHAs between proof and release workflows.
+This proof-completion boundary is mandatory. Publication authorization accepts only completed successful proof runs, so dispatching Release from a job inside the still-running proof workflow is a race and is non-compliant.
+
+Operators do not manually copy source/target SHAs between proof, promotion, and release workflows.
 
 ## CI
 
@@ -87,7 +91,7 @@ Available adapters:
 
 Compact CI supports Python `3.12`, `3.13`, `3.14` and Node `20`, `22`, `24`. Duplicate or unsupported requested versions fail closed.
 
-Enabled dimensions run as steps inside one reusable job named `CI Required`. Intermediate steps may continue after failure only to collect more evidence; the final verifier fails if any enabled control failed.
+Enabled dimensions run as steps inside one reusable job named `CI Required`. Intermediate steps may use `continue-on-error` only to collect more evidence; their recorded `outcome` remains authoritative and the final verifier fails if any enabled control failed. A visually continued step must not be interpreted as a passed control.
 
 `reusable-ci.yml` is the deliberate expanded/parallel compatibility path.
 
@@ -127,7 +131,7 @@ CodeQL is opt-in. Generated CodeQL callers do not execute fork PRs on persistent
 
 The repository `.prodkit/workflows/release-proof.sh` adapter is reserved for acceptance that is genuinely release-specific. For canonical new consumers, the reusable proof then executes `.prodkit/workflows/release-build.sh` once using the configured baseline toolchains, writes the repository-owned files beneath `release-payload/`, records each file's size and SHA-256 in `release-payload.json`, confirms tracked source remained immutable, and uploads the proof artifact.
 
-The generated caller supplies:
+The generated proof caller supplies:
 
 ```yaml
 source_sha: ${{ github.sha }}
@@ -135,7 +139,21 @@ required_workflows_json: '["CI","Security"]'
 prepare_release_payload: true
 ```
 
-A proof on another SHA/event does not satisfy publication. The proof-produced payload receipt is bound to repository, exact source SHA, and version.
+It has no release-dispatch job and no `actions: write` permission. A proof on another SHA/event does not satisfy publication. The proof-produced payload receipt is bound to repository, exact source SHA, and version.
+
+## Release Promotion
+
+The generated `release-promotion.yml` caller listens for:
+
+```yaml
+workflow_run:
+  workflows: ["Trusted Release Proof"]
+  types: [completed]
+```
+
+Its promotion job runs only when the upstream event was `workflow_dispatch` and the proof conclusion is `success`. It passes `${{ github.event.workflow_run.head_sha }}` to `reusable-release-promote.yml`, which rechecks current-main identity, derives the canonical SemVer, avoids duplicate active exact-source Release runs, dispatches Release, and exits without polling or waiting for publication.
+
+Promotion must not be embedded as a `needs: proof` job in `Trusted Release Proof`; job completion is not workflow completion.
 
 ## Publication
 
@@ -149,7 +167,7 @@ proof_workflow_file: .github/workflows/trusted-release-proof.yml
 reuse_proof_payload: true
 ```
 
-The central publisher owns proof authorization. It selects the latest successful `workflow_dispatch` of `proof_workflow_file` for the exact target SHA, captures that exact proof run ID, independently rechecks successful exact-SHA `push` runs for `CI` and `Security`, and verifies the target is still current `main`. Dynamic workflow display names are never authorization identities.
+The central publisher owns proof authorization. It selects the latest completed successful `workflow_dispatch` of `proof_workflow_file` for the exact target SHA, captures that exact proof run ID, independently rechecks successful exact-SHA `push` runs for `CI` and `Security`, and verifies the target is still current `main`. Dynamic workflow display names are never authorization identities.
 
 Publication is split into resumable jobs:
 
@@ -194,6 +212,7 @@ It cannot create/move tags, create a missing Release, rebuild/upload/delete/repl
 - CI;
 - Security;
 - Trusted Release Proof;
+- Release Promotion;
 - Release;
 - Release Verification;
 - Release Metadata;
@@ -208,12 +227,13 @@ The organization auditor requires these workflow families at the requested immut
 - `ci.yml` -> `reusable-ci-compact.yml`;
 - `security.yml` -> `reusable-security-compact.yml`;
 - `trusted-release-proof.yml` -> `reusable-release-proof.yml`;
+- `release-promotion.yml` -> `reusable-release-promote.yml`;
 - `release.yml` -> `reusable-release.yml`;
 - `release-verification.yml` -> `reusable-release-verification.yml`;
 - `release-metadata.yml` -> `reusable-release-metadata-current.yml`.
 
-It also rejects floating references, retired runner-controller usage, manually copied release target semantics, duplicated consumer proof gates, missing central proof delegation, and local publication implementation in consumer `release.yml`.
+It also rejects floating references, retired runner-controller usage, promotion before proof workflow completion, manually copied release target semantics, duplicated consumer proof gates, missing central proof delegation, and local publication implementation in consumer `release.yml`.
 
 ## Compatibility policy
 
-Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. Proof-payload reuse defaults off in that compatibility surface so historical proof adapters remain valid. New bootstrap output and current organization policy use the direct proof-once/publish-once architecture.
+Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. Proof-payload reuse defaults off in that compatibility surface so historical proof adapters remain valid. New bootstrap output and current organization policy use the direct proof-once/promote-after-completion/publish-once architecture.
