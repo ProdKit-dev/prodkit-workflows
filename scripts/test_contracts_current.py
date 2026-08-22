@@ -58,6 +58,7 @@ permissions:
 def main() -> None:
     test_contracts.EXPECTED_GITHUB_WORKFLOWS.update(
         {
+            "branch-cleanup.yml",
             "trusted-release-proof.yml",
             "release-promotion.yml",
             "release-verification.yml",
@@ -177,6 +178,26 @@ def main() -> None:
     ):
         require(caller, fragment, "generated branch cleanup caller")
     reject(caller, "issue_comment:", "generated branch cleanup caller authorization")
+
+    self_caller = ".github/workflows/branch-cleanup.yml"
+    for fragment in (
+        "workflow_dispatch:",
+        "branches_json:",
+        "dry_run:",
+        "contents: write",
+        "pull-requests: read",
+        "uses: ./.github/workflows/reusable-branch-cleanup.yml",
+        "expected_default_sha: ${{ github.sha }}",
+        'runner_json: \'"ubuntu-latest"\'',
+        "dry_run: ${{ inputs.dry_run }}",
+    ):
+        require(self_caller, fragment, "control-plane branch cleanup caller")
+    if audit_org.workflow_events((ROOT / self_caller).read_text(encoding="utf-8")) != {"workflow_dispatch"}:
+        raise SystemExit("control-plane branch cleanup caller must be workflow_dispatch-only")
+    reject(self_caller, "issue_comment:", "control-plane branch cleanup caller authorization")
+    reject(self_caller, "schedule:", "control-plane branch cleanup caller authorization")
+    reject(self_caller, "pull_request_target:", "control-plane branch cleanup caller authorization")
+
     require(
         "scripts/audit_org.py",
         'workflow_events(text) != {"workflow_dispatch"}',
