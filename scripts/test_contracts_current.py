@@ -102,12 +102,19 @@ def main() -> None:
         "dry_run:",
         'default: \'"ubuntu-latest"\'',
         "Branch Cleanup Required",
+        "group: branch-cleanup-${{ github.repository }}",
+        "cancel-in-progress: false",
+        "def read_ref_path(branch: str)",
+        "def delete_ref_path(branch: str)",
+        "def has_open_pr(branch: str)",
         "default branch is never deletable",
         "branch is the head of an open pull request",
         "branch is protected by repository policy",
         "cleanup preflight rejected targets",
         "default branch moved after cleanup preflight",
-        'call("DELETE", ref_path(branch))',
+        "branch became the head of an open pull request during cleanup",
+        'call("DELETE", delete_ref_path(branch))',
+        'call("GET", read_ref_path(branch), allow_404=True)',
         "branch deletion did not verify absent",
         "cleanup-evidence.json",
     ):
@@ -125,6 +132,11 @@ def main() -> None:
     ):
         require(caller, fragment, "generated branch cleanup caller")
     reject(caller, "issue_comment:", "generated branch cleanup caller authorization")
+    require(
+        "scripts/audit_org.py",
+        'workflow_events(text) != {"workflow_dispatch"}',
+        "branch cleanup trigger audit",
+    )
 
 
 if __name__ == "__main__":
