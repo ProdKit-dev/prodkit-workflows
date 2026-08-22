@@ -2,6 +2,25 @@
 
 All notable changes to this repository are documented here.
 
+## [0.1.0] - 2026-08-22
+
+- Promote the organization workflow control plane from bootstrap status to the first stable operational release.
+- Make compact CI and Security the normative generated path while preserving stable required-check identities and backward-compatible expanded workflows.
+- Keep runner selection direct and deterministic through `runner_json`, with trusted self-hosted defaults, explicit override support, and fork isolation.
+- Remove duplicated expensive release work: permanent exact-SHA CI/Security are verified as evidence instead of rerun by Trusted Release Proof.
+- Build the repository-owned promotable release payload exactly once during proof and bind it to a digest receipt.
+- Make Release import the exact proof-produced payload instead of rebuilding the same artifacts.
+- Split publication into resumable prepare, build/seal, optional-attestation, and publish jobs so GitHub `Re-run failed jobs` can resume late failures without restarting successful work.
+- Make draft recovery incremental, preserving already-correct assets and replacing only missing or checksum-mismatched payloads.
+- Centralize exact-SHA proof authorization in the reusable publisher and remove copied proof-gate implementations from generated callers and compatibility wrappers.
+- Require Trusted Release Proof to complete fully before promotion starts; promotion now runs in a separate `workflow_run`-triggered `Release Promotion` workflow.
+- Keep promotion non-blocking and single-runner-safe: it dispatches Release idempotently and never polls a child workflow while holding a runner.
+- Add independent read-only Release Verification after publication.
+- Make GitHub Artifact Attestations capability-dependent and disabled by default while preserving fail-closed source, checksum, SBOM, and publication verification.
+- Align generated callers, bootstrap, organization audit, lifecycle contracts, security model, and adoption guidance with proof-once / publish-once semantics.
+- Update adoption guidance so operators wait for automatic `Release Promotion` after proof instead of manually dispatching a duplicate Release.
+- Preserve compatibility entry points for older pinned consumers without allowing them to redefine the new normative lifecycle.
+
 ## [0.0.0] - 2026-08-20
 
 - Establish the ProdKit organization-wide reusable workflow control plane.
