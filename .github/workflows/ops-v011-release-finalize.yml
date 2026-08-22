@@ -1,0 +1,116 @@
+name: Ops v0.1.1 Release Finalize
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/ops-v011-release-finalize.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch-proof:
+    name: verify exact main and dispatch trusted proof
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'ops/v0.1.1-release-finalize' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_SHA: 9105840ed105ed55830ff7015f1b5ae14657f5b5
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify exact-main gates and dispatch proof idempotently
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          target = os.environ["TARGET_SHA"]
+          api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-v011-finalizer",
+          }
+
+          def request(method: str, path: str, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(f"{api}/repos/{repo}{path}", data=data, headers=headers, method=method)
+              with urllib.request.urlopen(req, timeout=120) as response:
+                  raw = response.read()
+                  return response.status, json.loads(raw) if raw else None
+
+          _, metadata = request("GET", "")
+          if metadata.get("default_branch") != "main":
+              raise SystemExit("default branch is not main")
+          _, main = request("GET", "/branches/main")
+          actual = main.get("commit", {}).get("sha")
+          if actual != target:
+              raise SystemExit(f"main moved: {actual} != {target}")
+
+          params = urllib.parse.urlencode({"head_sha": target, "event": "push", "per_page": 100})
+          _, payload = request("GET", f"/actions/runs?{params}")
+          runs = payload.get("workflow_runs", [])
+          required = ("CI", "Security")
+          for name in required:
+              matches = [
+                  run for run in runs
+                  if run.get("name") == name
+                  and run.get("head_sha") == target
+                  and run.get("event") == "push"
+                  and run.get("status") == "completed"
+                  and run.get("conclusion") == "success"
+              ]
+              if not matches:
+                  raise SystemExit(f"missing successful exact-main {name} push run for {target}")
+              match = max(matches, key=lambda item: int(item["id"]))
+              print(f"{name}_RUN_ID={match['id']}")
+
+          proof_params = urllib.parse.urlencode({"head_sha": target, "event": "workflow_dispatch", "per_page": 100})
+          _, proof_payload = request("GET", f"/actions/runs?{proof_params}")
+          proofs = [
+              run for run in proof_payload.get("workflow_runs", [])
+              if run.get("path") == ".github/workflows/trusted-release-proof.yml"
+              and run.get("head_sha") == target
+          ]
+          successful = [run for run in proofs if run.get("status") == "completed" and run.get("conclusion") == "success"]
+          active = [run for run in proofs if run.get("status") in {"queued", "in_progress", "pending", "waiting"}]
+          if successful:
+              run = max(successful, key=lambda item: int(item["id"]))
+              print(f"PROOF_ALREADY_SUCCESS={run['id']}")
+              raise SystemExit(0)
+          if active:
+              run = max(active, key=lambda item: int(item["id"]))
+              print(f"PROOF_ALREADY_ACTIVE={run['id']}:{run.get('status')}")
+              raise SystemExit(0)
+
+          status, _ = request(
+              "POST",
+              "/actions/workflows/trusted-release-proof.yml/dispatches",
+              {"ref": "main"},
+          )
+          if status != 204:
+              raise SystemExit(f"unexpected proof dispatch status {status}")
+          print("PROOF_DISPATCHED=true")
+
+          time.sleep(3)
+          _, refreshed = request("GET", f"/actions/runs?{proof_params}")
+          new_proofs = [
+              run for run in refreshed.get("workflow_runs", [])
+              if run.get("path") == ".github/workflows/trusted-release-proof.yml"
+              and run.get("head_sha") == target
+          ]
+          if new_proofs:
+              run = max(new_proofs, key=lambda item: int(item["id"]))
+              print(f"PROOF_RUN_ID={run['id']}")
+              print(f"PROOF_STATUS={run.get('status')}")
+          PY
