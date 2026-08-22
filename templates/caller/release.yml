@@ -30,6 +30,7 @@ jobs:
       runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
       required_workflows_json: '["CI","Security"]'
       proof_workflow_file: .github/workflows/trusted-release-proof.yml
+      reuse_proof_payload: true
       python_enabled: true
       python_version: "3.12"
       uv_version: "0.10.0"
