@@ -7,11 +7,13 @@ The reliability boundary is intentionally simple: **the consumer caller chooses 
 ## Design principles
 
 - **Direct execution.** CI, Security, proof, release, metadata, CodeQL, and audit callers pass `runner_json` directly to the reusable workload they invoke. There is no default probe/resolver/preflight controller hop.
+- **Thin consumers.** Generated callers define triggers and inputs; reusable workflows own API authorization, evidence checks, build/publish mechanics, and retry semantics. Release callers do not copy a local proof-gate implementation.
 - **One workload job for normal CI and Security.** Compact CI exposes `ci / CI Required`; compact Security exposes `security / Security Required`. Compatibility/scanning dimensions remain visible as steps.
 - **Immutable reuse.** Cross-repository callers pin a full 40-character `prodkit-workflows` commit SHA. Floating branches/tags are not production contracts.
 - **Fork safety.** Generated CI/Security callers force fork-originated pull requests to `ubuntu-latest`. Persistent trusted runners never execute untrusted fork code by default.
 - **Configurable runner target.** Generated callers read optional `PRODKIT_RUNNER_JSON`. When unset, trusted work defaults to `["self-hosted","Linux","X64"]`. This variable is the complete JSON value passed to `runs-on`; it is not a routing mode.
 - **Exact-main releases.** `Trusted Release Proof` certifies the workflow-dispatched `${{ github.sha }}`. `Release` publishes the workflow-dispatched `${{ github.sha }}`. Operators no longer copy SHA values between workflows.
+- **Resumable publication.** Release build output is sealed once and passed between release jobs as a workflow artifact. Late failures resume from successful job boundaries.
 - **Fail closed.** Missing evidence, invalid manifests, failed enabled controls, tag movement, path escapes, unsafe payloads, checksum mismatches, or metadata repair that changes immutable state stop the operation.
 
 ## Reusable workload surface
@@ -23,13 +25,14 @@ The reliability boundary is intentionally simple: **the consumer caller chooses 
 | Expanded CI | `.github/workflows/reusable-ci.yml` | `CI Required` |
 | Expanded Security | `.github/workflows/reusable-security.yml` | `Security Required` |
 | Trusted release proof | `.github/workflows/reusable-release-proof.yml` | exact-source proof |
-| Guarded release publication | `.github/workflows/reusable-release.yml` | `Guarded release` |
+| Guarded release publication | `.github/workflows/reusable-release.yml` | prepare → build/seal → optional attest → publish |
+| Independent release verification | `.github/workflows/reusable-release-verification.yml` | immutable publication verification |
 | Release metadata selection | `.github/workflows/reusable-release-metadata-current.yml` | metadata workflow |
 | Guarded metadata repair | `.github/workflows/reusable-release-metadata.yml` | metadata repair |
 | CodeQL | `.github/workflows/reusable-codeql.yml` | `CodeQL Required` |
 | Organization audit | `.github/workflows/reusable-org-audit.yml` | audit |
 
-`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain in the repository only for consumers already pinned to older revisions. Bootstrap, generated callers, organization audit expectations, and control-plane self-callers do not use them.
+`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain in the repository only for consumers already pinned to older revisions. The compatibility release pipeline delegates to the same central resumable publisher; bootstrap, generated callers, organization audit expectations, and control-plane self-callers use the direct architecture.
 
 ## Consumer setup
 
@@ -50,6 +53,7 @@ Bootstrap creates:
   security.yml
   trusted-release-proof.yml
   release.yml
+  release-verification.yml
   release-metadata.yml
 .prodkit/
   release.json
@@ -98,24 +102,32 @@ merge to main
 
 workflow_dispatch Trusted Release Proof
   -> certifies github.sha (current main)
+  -> promotion dispatches Release and exits
 
 workflow_dispatch Release(version)
   -> github.sha is target source
-  -> require exact-SHA CI + Security push successes
-  -> require successful exact-SHA Trusted Release Proof
-  -> validate manifest/version/notes
-  -> build product payloads
-  -> source archive + SBOM + checksums
-  -> optional GitHub Artifact Attestation when explicitly enabled and supported
+  -> central prepare: require exact-SHA CI + Security + Trusted Release Proof
+  -> build/seal: product payload + source archive + SBOM + SHA256SUMS
+  -> optional attest: consume sealed workflow artifact
+  -> publish: consume same sealed artifact
   -> immutable vX.Y.Z tag
-  -> draft-first GitHub Release
-  -> upload/read-back verification
-  -> publish + remote checksum verification
+  -> resumable draft-first GitHub Release
+  -> draft upload/read-back verification
+  -> publish
+
+workflow_run Release Verification
+  -> independent post-publication checksum/digest verification
 ```
 
-GitHub Artifact Attestations are an optional additional provenance layer. They default off because feature availability depends on repository visibility and organization plan. Explicitly enabling attestations keeps failure release-fatal; the baseline release still requires exact-source proof, SBOM, `SHA256SUMS`, and remote asset verification.
+GitHub Artifact Attestations are an optional additional provenance layer. They default off because feature availability depends on repository visibility and organization plan. Explicitly enabling attestations keeps failure release-fatal; the baseline release still requires exact-source proof, SBOM, `SHA256SUMS`, sealed-payload verification, and independent published-asset verification.
 
-A release caller does not accept a manually copied `target_sha`. A proof caller does not accept a manually copied `source_sha`. Dispatch both workflows from the intended `main` revision.
+A release caller does not accept a manually copied `target_sha` and does not implement its own proof API query. A proof caller does not accept a manually copied `source_sha`. Dispatch from the intended `main` revision.
+
+### Retry behavior
+
+Do not restart a release from scratch after a late-stage failure. Use GitHub **Re-run failed jobs** on the same Release workflow run. GitHub re-runs failed jobs and their dependent jobs, while the successful build/seal job remains complete and its workflow artifact is reused.
+
+The publisher also resumes partial draft publication: already-correct assets are retained, and only missing or checksum-mismatched assets are uploaded again. If publication already completed, preflight verifies it and exits idempotently.
 
 Mutable Release presentation repair is separate from publication. It may update canonical name/body only after proving the immutable tag and complete published payload remain unchanged.
 
@@ -126,6 +138,6 @@ Organization rulesets should require:
 - `ci / CI Required`
 - `security / Security Required`
 
-Run `scripts/audit_org.py` or the Organization Audit workflow to find missing lifecycle callers, floating central refs, obsolete central SHAs, retired runner-controller usage, or local publication implementations.
+Run `scripts/audit_org.py` or the Organization Audit workflow to find missing lifecycle callers, floating central refs, obsolete central SHAs, retired runner-controller usage, duplicated consumer proof gates, or local publication implementations.
 
 See `docs/CONTRACTS.md`, `docs/RUNNERS.md`, `docs/LIFECYCLE.md`, and `docs/ADOPTION.md` for the normative integration contract.
