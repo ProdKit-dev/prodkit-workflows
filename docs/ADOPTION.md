@@ -19,6 +19,8 @@ python3 scripts/bootstrap_consumer.py \
 
 Edit repository-owned adapters and disable unused capabilities. Keep release metadata in `.prodkit/release.json` aligned with the repository’s actual version sources and release notes.
 
+The generated integration includes `Branch Cleanup`. It is an explicitly dispatched maintenance caller pinned to the same central revision; consumers must not replace it with repository-local branch-deletion code.
+
 ## 4. Configure the runner directly
 
 New generated callers do not invoke a runner-selection controller.
@@ -34,6 +36,8 @@ If a repository needs another trusted target, set the non-secret Actions variabl
 Fork-originated CI/Security pull requests remain forced to `ubuntu-latest`; do not remove that guard for persistent runners.
 
 There is no automatic runner failover in the normative architecture. If a runner is unavailable, repair it or deliberately change the direct runner target for subsequent runs. See `docs/RUNNERS.md`.
+
+Branch Cleanup is deliberately different: it defaults to GitHub-hosted `ubuntu-latest` so repository housekeeping cannot be blocked by, or execute on, a persistent product runner.
 
 ## 5. Stabilize required checks
 
@@ -71,14 +75,33 @@ Do not manually dispatch `Release` after a successful proof when `Release Promot
 
 Operators should not manually copy commit SHAs between these workflows.
 
-## 8. Audit drift
+## 8. Clean obsolete branches safely
+
+Use the generated `Branch Cleanup` workflow instead of repository-local cleanup scripts or transient operator workflows.
+
+The workflow is `workflow_dispatch` only. Supply `branches_json` as a JSON array of exact branch names. Leave `dry_run` enabled for the first pass, inspect the evidence summary, then deliberately dispatch again with `dry_run=false` when the targets are correct.
+
+The reusable cleanup contract fails closed when:
+
+- the default branch moved away from the exact SHA reviewed at dispatch time;
+- a requested branch is the repository default branch;
+- a requested branch is protected;
+- a requested branch is the head of an open pull request;
+- the target list is malformed, duplicated, empty, or uses branch names outside the conservative ref contract.
+
+The implementation preflights the complete target set before mutation, deletes only explicit names, rechecks the default SHA during mutation, verifies each deleted ref is absent, and writes cleanup evidence to the workflow log/summary. Already-absent branches are idempotent success.
+
+Do not expose cleanup through `push`, `schedule`, or unauthenticated/comment-driven triggers. The canonical caller intentionally runs on GitHub-hosted `ubuntu-latest` and grants `contents: write` only to its cleanup job.
+
+## 9. Audit drift
 
 Configure `ORG_AUDIT_TOKEN` with read access to the target repositories and run Organization Audit. The auditor rejects:
 
-- missing lifecycle callers;
+- missing lifecycle or branch-cleanup callers;
 - floating central refs;
 - obsolete central SHAs;
 - retired runner-controller usage;
+- automatic/comment-driven branch cleanup callers;
 - the retired nested Release pipeline as the generated release contract;
 - local publication implementations in consumer `release.yml`.
 

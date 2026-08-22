@@ -34,6 +34,41 @@ def file_text(repo, path, token):
     return base64.b64decode(obj["content"]).decode()
 
 
+def workflow_events(text):
+    """Return top-level workflow events, or None when the on: mapping is non-canonical/ambiguous."""
+    lines = text.splitlines()
+    start = None
+    on_key = re.compile(r'^\s*(?:on|"on"|\'on\'):\s*(?:#.*)?$')
+    for index, line in enumerate(lines):
+        if on_key.fullmatch(line):
+            if line[: len(line) - len(line.lstrip())]:
+                continue
+            start = index
+            break
+    if start is None:
+        return None
+
+    key_pattern = re.compile(
+        r'^  (?:(?:"([A-Za-z0-9_-]+)")|(?:\'([A-Za-z0-9_-]+)\')|([A-Za-z0-9_-]+)):\s*(?:.*)?$'
+    )
+    events = set()
+    for line in lines[start + 1 :]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
+            break
+        if indent > 2:
+            continue
+        if indent != 2:
+            return None
+        match = key_pattern.fullmatch(line)
+        if not match:
+            return None
+        events.add(next(group for group in match.groups() if group is not None))
+    return events
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--org", required=True)
@@ -66,6 +101,7 @@ def main():
     required = {
         "ci.yml": "reusable-ci-compact.yml",
         "security.yml": "reusable-security-compact.yml",
+        "branch-cleanup.yml": "reusable-branch-cleanup.yml",
         "trusted-release-proof.yml": "reusable-release-proof.yml",
         "release-promotion.yml": "reusable-release-promote.yml",
         "release.yml": "reusable-release.yml",
@@ -117,6 +153,25 @@ def main():
 
             if "reusable-runner-policy.yml@" in text or "PRODKIT_RUNNER_MODE" in text:
                 errors.append(f"{filename} uses retired runner-controller orchestration")
+
+            if filename == "branch-cleanup.yml":
+                required_fragments = (
+                    "workflow_dispatch:",
+                    "branches_json:",
+                    "dry_run:",
+                    "contents: write",
+                    "pull-requests: read",
+                    "expected_default_sha: ${{ github.sha }}",
+                    'runner_json: \'"ubuntu-latest"\'',
+                )
+                if any(fragment not in text for fragment in required_fragments):
+                    errors.append(
+                        "branch-cleanup.yml must remain explicit, SHA-bound, GitHub-hosted cleanup"
+                    )
+                if workflow_events(text) != {"workflow_dispatch"}:
+                    errors.append(
+                        "branch-cleanup.yml must expose workflow_dispatch as its only trigger"
+                    )
 
             if filename == "trusted-release-proof.yml":
                 if "workflow_dispatch:" not in text:
