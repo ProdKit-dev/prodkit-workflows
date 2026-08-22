@@ -46,6 +46,17 @@ jobs:
       EXPECTED_DEFAULT_SHA: ${{ inputs.expected_default_sha }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
+      - name: Authorize explicit dispatch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "Branch cleanup is authorized only from an explicit workflow_dispatch caller; got $EVENT_NAME" >&2
+            exit 1
+          fi
+
       - name: Validate and clean explicit branches
         id: cleanup
         shell: bash
