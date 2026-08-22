@@ -19,10 +19,6 @@ permissions:
   attestations: write
   artifact-metadata: write
 
-concurrency:
-  group: release-${{ inputs.version }}
-  cancel-in-progress: false
-
 jobs:
   proof-gate:
     name: Verify release-candidate proof
