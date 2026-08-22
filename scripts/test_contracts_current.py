@@ -29,10 +29,11 @@ def main() -> None:
             "release-verification.yml",
             "reusable-release-promote.yml",
             "reusable-release-verification.yml",
+            "reusable-branch-cleanup.yml",
         }
     )
     test_contracts.DEFAULT_CALLERS.update(
-        {"release-promotion.yml", "release-verification.yml"}
+        {"release-promotion.yml", "release-verification.yml", "branch-cleanup.yml"}
     )
     test_contracts.EXPECTED_SELF_ADAPTERS.add("release-proof.sh")
     test_contracts.main()
@@ -92,6 +93,38 @@ def main() -> None:
         "uses: ./.github/workflows/reusable-release-verification.yml",
         "control-plane release verification",
     )
+
+    cleanup = ".github/workflows/reusable-branch-cleanup.yml"
+    for fragment in (
+        "workflow_call:",
+        "branches_json:",
+        "expected_default_sha:",
+        "dry_run:",
+        'default: \'"ubuntu-latest"\'',
+        "Branch Cleanup Required",
+        "default branch is never deletable",
+        "branch is the head of an open pull request",
+        "branch is protected by repository policy",
+        "cleanup preflight rejected targets",
+        "default branch moved after cleanup preflight",
+        'call("DELETE", ref_path(branch))',
+        "branch deletion did not verify absent",
+        "cleanup-evidence.json",
+    ):
+        require(cleanup, fragment, "reusable branch cleanup")
+
+    caller = "templates/caller/branch-cleanup.yml"
+    for fragment in (
+        "workflow_dispatch:",
+        "contents: write",
+        "pull-requests: read",
+        "reusable-branch-cleanup.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "expected_default_sha: ${{ github.sha }}",
+        'runner_json: \'"ubuntu-latest"\'',
+        "dry_run: ${{ inputs.dry_run }}",
+    ):
+        require(caller, fragment, "generated branch cleanup caller")
+    reject(caller, "issue_comment:", "generated branch cleanup caller authorization")
 
 
 if __name__ == "__main__":
