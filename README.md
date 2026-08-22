@@ -6,14 +6,15 @@ The reliability boundary is intentionally simple: **the consumer caller chooses 
 
 ## Design principles
 
-- **Direct execution.** CI, Security, proof, release, metadata, CodeQL, and audit callers pass `runner_json` directly to the reusable workload they invoke. There is no default probe/resolver/preflight controller hop.
+- **Direct execution.** CI, Security, proof, promotion, release, verification, metadata, CodeQL, and audit callers pass `runner_json` directly to the reusable workload they invoke. There is no default probe/resolver/preflight controller hop.
 - **Thin consumers.** Generated callers define triggers and inputs; reusable workflows own API authorization, evidence checks, build/publish mechanics, and retry semantics. Release callers do not copy a local proof-gate implementation.
 - **No expensive gate duplication.** Permanent exact-SHA CI/Security are verified as evidence by Trusted Release Proof; they are not rerun inside proof. The repository release payload is built once during proof and promoted unchanged into publication.
+- **Completion-boundary promotion.** `Trusted Release Proof` finishes first. A separate `Release Promotion` caller starts from its successful `workflow_run` completion event, then dispatches Release. Release can therefore never race a proof run that is still `in_progress`.
 - **One workload job for normal CI and Security.** Compact CI exposes `ci / CI Required`; compact Security exposes `security / Security Required`. Compatibility/scanning dimensions remain visible as steps.
 - **Immutable reuse.** Cross-repository callers pin a full 40-character `prodkit-workflows` commit SHA. Floating branches/tags are not production contracts.
 - **Fork safety.** Generated CI/Security callers force fork-originated pull requests to `ubuntu-latest`. Persistent trusted runners never execute untrusted fork code by default.
 - **Configurable runner target.** Generated callers read optional `PRODKIT_RUNNER_JSON`. When unset, trusted work defaults to `["self-hosted","Linux","X64"]`. This variable is the complete JSON value passed to `runs-on`; it is not a routing mode.
-- **Exact-main releases.** `Trusted Release Proof` certifies the workflow-dispatched `${{ github.sha }}`. `Release` publishes the workflow-dispatched `${{ github.sha }}`. Operators no longer copy SHA values between workflows.
+- **Exact-main releases.** `Trusted Release Proof` certifies the workflow-dispatched `${{ github.sha }}`. `Release Promotion` carries the completed proof run's `head_sha`. `Release` publishes the workflow-dispatched `${{ github.sha }}`. Operators do not copy SHAs between workflows.
 - **Resumable publication.** The proof-produced repository payload and later sealed publication payload are workflow-artifact checkpoints. Late failures resume from successful job boundaries.
 - **Fail closed.** Missing evidence, invalid manifests, failed enabled controls, tag movement, path escapes, unsafe payloads, checksum mismatches, or metadata repair that changes immutable state stop the operation.
 
@@ -26,6 +27,7 @@ The reliability boundary is intentionally simple: **the consumer caller chooses 
 | Expanded CI | `.github/workflows/reusable-ci.yml` | `CI Required` |
 | Expanded Security | `.github/workflows/reusable-security.yml` | `Security Required` |
 | Trusted release proof | `.github/workflows/reusable-release-proof.yml` | exact-source proof + promotable repository payload |
+| Release promotion | `.github/workflows/reusable-release-promote.yml` | bounded idempotent Release dispatch |
 | Guarded release publication | `.github/workflows/reusable-release.yml` | prepare → import/seal → optional attest → publish |
 | Independent release verification | `.github/workflows/reusable-release-verification.yml` | immutable publication verification |
 | Release metadata selection | `.github/workflows/reusable-release-metadata-current.yml` | metadata workflow |
@@ -53,6 +55,7 @@ Bootstrap creates:
   ci.yml
   security.yml
   trusted-release-proof.yml
+  release-promotion.yml
   release.yml
   release-verification.yml
   release-metadata.yml
@@ -88,7 +91,7 @@ The value must be valid JSON accepted by `runs-on`. Do not use it to route fork 
 
 Compact CI supports Python `3.12`, `3.13`, `3.14` and Node `20`, `22`, `24`; a caller may choose any supported non-empty subset. PostgreSQL, container, hygiene, and custom adapters are independently enabled.
 
-Compact execution keeps dimensions as steps in one required workload job. Enabled steps may use `continue-on-error` so later evidence can still be collected, but the final aggregate verifier fails the job if any required setup/control failed.
+Compact execution keeps dimensions as steps in one required workload job. Enabled steps may use `continue-on-error` so later evidence can still be collected, but the final aggregate verifier fails the job if any required setup/control failed. GitHub may render a continued step as visually successful even when its recorded `outcome` is `failure`; the final aggregate intentionally evaluates the recorded outcomes.
 
 Expanded `reusable-ci.yml` and `reusable-security.yml` remain available when a repository deliberately needs parallel matrix jobs.
 
@@ -107,11 +110,17 @@ workflow_dispatch Trusted Release Proof
   -> runs release-specific acceptance only
   -> runs release-build once
   -> uploads proof-produced payload + digest receipt
-  -> promotion dispatches Release and exits
+  -> workflow completes successfully
+
+workflow_run Release Promotion
+  -> starts only after completed successful Trusted Release Proof
+  -> carries the proof run head_sha
+  -> rechecks current-main identity
+  -> dispatches Release idempotently and exits
 
 workflow_dispatch Release(version)
   -> github.sha is target source
-  -> central prepare: reauthorize exact-SHA CI + Security + exact proof run
+  -> central prepare: reauthorize exact-SHA CI + Security + exact completed proof run
   -> import/seal: download and verify proof-produced payload
   -> add source archive + SBOM + release metadata + SHA256SUMS
   -> optional attest: consume sealed workflow artifact
@@ -127,7 +136,7 @@ workflow_run Release Verification
 
 GitHub Artifact Attestations are an optional additional provenance layer. They default off because feature availability depends on repository visibility and organization plan. Explicitly enabling attestations keeps failure release-fatal; the baseline release still requires exact-source proof, proof-produced payload digests, SBOM, `SHA256SUMS`, sealed-payload verification, and independent published-asset verification.
 
-A release caller does not accept a manually copied `target_sha` and does not implement its own proof API query. A proof caller does not accept a manually copied `source_sha`. Dispatch from the intended `main` revision.
+A release caller does not accept a manually copied `target_sha` and does not implement its own proof API query. A proof caller does not accept a manually copied `source_sha`. Dispatch proof from the intended `main` revision; promotion is automatic only after that proof workflow has completed successfully.
 
 ### Retry behavior
 
@@ -144,6 +153,6 @@ Organization rulesets should require:
 - `ci / CI Required`
 - `security / Security Required`
 
-Run `scripts/audit_org.py` or the Organization Audit workflow to find missing lifecycle callers, floating central refs, obsolete central SHAs, retired runner-controller usage, duplicated consumer proof gates, or local publication implementations.
+Run `scripts/audit_org.py` or the Organization Audit workflow to find missing lifecycle callers, floating central refs, obsolete central SHAs, retired runner-controller usage, promotion-before-proof-completion topology, duplicated consumer proof gates, or local publication implementations.
 
 See `docs/CONTRACTS.md`, `docs/RUNNERS.md`, `docs/LIFECYCLE.md`, and `docs/ADOPTION.md` for the normative integration contract.

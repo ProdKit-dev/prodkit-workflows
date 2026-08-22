@@ -67,6 +67,7 @@ def main():
         "ci.yml": "reusable-ci-compact.yml",
         "security.yml": "reusable-security-compact.yml",
         "trusted-release-proof.yml": "reusable-release-proof.yml",
+        "release-promotion.yml": "reusable-release-promote.yml",
         "release.yml": "reusable-release.yml",
         "release-verification.yml": "reusable-release-verification.yml",
         "release-metadata.yml": "reusable-release-metadata-current.yml",
@@ -118,18 +119,31 @@ def main():
                 errors.append(f"{filename} uses retired runner-controller orchestration")
 
             if filename == "trusted-release-proof.yml":
-                if "reusable-release-promote.yml@" not in text or "needs: proof" not in text:
+                if "workflow_dispatch:" not in text:
+                    errors.append("trusted-release-proof.yml must remain explicitly dispatched")
+                if "reusable-release-promote.yml@" in text or "actions: write" in text:
                     errors.append(
-                        "trusted-release-proof.yml must promote only after successful proof"
+                        "trusted-release-proof.yml must finish before Release promotion starts"
                     )
-                if "actions: write" not in text:
+
+            if filename == "release-promotion.yml":
+                required_fragments = (
+                    "workflow_run:",
+                    'workflows: ["Trusted Release Proof"]',
+                    "types: [completed]",
+                    "github.event.workflow_run.event == 'workflow_dispatch'",
+                    "github.event.workflow_run.conclusion == 'success'",
+                    "workflow_run.head_sha",
+                    "actions: write",
+                )
+                if any(fragment not in text for fragment in required_fragments):
                     errors.append(
-                        "trusted-release-proof.yml promotion must be allowed to dispatch Release"
+                        "release-promotion.yml must dispatch only after a completed successful proof"
                     )
                 for forbidden in ("time.sleep(", "while time.time()", "wait_for_release"):
                     if forbidden in text:
                         errors.append(
-                            "trusted-release-proof.yml must not wait for Release on the trusted runner"
+                            "release-promotion.yml must not poll or wait for Release"
                         )
 
             if filename == "release.yml":
