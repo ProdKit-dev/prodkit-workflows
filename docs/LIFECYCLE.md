@@ -10,7 +10,7 @@
 | Main branch | `push` to `main` | Certify the actual merge SHA | successful exact-SHA `CI` and `Security` |
 | Release candidate | explicit `workflow_dispatch` | Release-grade exact-source acceptance | `Trusted Release Proof` |
 | Promotion | successful proof dependency | Dispatch the proven version without waiting for publication | bounded idempotent Release dispatch |
-| Publication | promoted `workflow_dispatch` | Verify evidence, build, optionally attest, tag, publish | immutable tag + Release + checksums/SBOM; optional GitHub provenance |
+| Publication | promoted `workflow_dispatch` | Validate, build/seal, optionally attest, and publish | immutable tag + Release + checksums/SBOM; optional GitHub provenance |
 | Verification | `workflow_run` after Release | Independently verify immutable publication | exact tag/source/metadata/assets/checksums |
 | Metadata repair | canonical metadata push or explicit dispatch | Repair mutable Release presentation only | verified name/body repair with immutable state unchanged |
 
@@ -30,7 +30,7 @@ Cross-workflow sequencing therefore uses completion boundaries:
 
 1. proof completes and releases the runner;
 2. a bounded promotion job derives the release version from the exact source, dispatches Release idempotently, and exits;
-3. Release acquires the free runner and publishes;
+3. Release acquires the free runner and advances through short sequential release jobs;
 4. `workflow_run` starts independent verification only after Release has completed.
 
 Long-running controller/orchestrator workflows are not part of the generated default lifecycle.
@@ -52,7 +52,7 @@ The reusable proof checks that this SHA is still current `main`, executes the re
 
 After proof succeeds, the generated caller invokes `reusable-release-promote.yml`. Promotion rechecks current-main identity, derives one consistent SemVer from `.prodkit/release.json`, avoids a duplicate dispatch only while an exact-source Release run is actively queued/running, otherwise dispatches the repository Release workflow, and exits immediately without waiting.
 
-An existing tag or GitHub Release is not closure evidence by itself. If the tag already resolves to the proven SHA, promotion still re-dispatches the idempotent Release workflow so its full payload/checksum/post-publication verification executes again. This closes partial-publication recovery cases where a prior run became public before failing a later verification step.
+An existing tag or GitHub Release is not closure evidence by itself. If the tag already resolves to the proven SHA, promotion may re-dispatch the idempotent Release workflow so the publisher can verify or resume the exact release transaction without rebuilding already-complete stages.
 
 Proof does not run on every pull-request commit, ordinary main push, or tag event.
 
@@ -60,11 +60,22 @@ Proof does not run on every pull-request commit, ordinary main push, or tag even
 
 `Release` remains dispatch-only, but the normal lifecycle dispatch is owned by proof promotion rather than a second manual operator step. The release target is `${{ github.sha }}` from the dispatch on `main`.
 
-Before publication the caller requires a successful dispatch of `Trusted Release Proof` for that exact SHA, identified by authoritative workflow file path rather than mutable display name. The guarded reusable publisher independently requires successful `push` runs of `CI` and `Security` for the same exact SHA.
+The consumer Release caller is deliberately thin: it passes the exact source, toolchain settings, and the authoritative `Trusted Release Proof` workflow path to `reusable-release.yml`. It does not duplicate GitHub API proof-gate code. The reusable publisher centrally requires a successful proof dispatch for the exact SHA and successful `push` runs of `CI` and `Security` for that same SHA.
 
-The reusable publisher then validates release metadata, executes the repository release-build adapter, adds central source/SBOM/checksum evidence, optionally creates a GitHub Artifact Attestation, creates or verifies the immutable tag, performs draft-first publication, reads assets back, and verifies the published checksum set.
+Publication is checkpointed at job boundaries:
 
-GitHub Artifact Attestations are optional because feature availability depends on repository visibility and GitHub organization plan. The reusable publisher defaults `attest` to `false`. A consumer may explicitly set `attest: true` only when the feature is available; once explicitly enabled, attestation failure is release-fatal. Exact-source gates, SBOM generation, `SHA256SUMS`, asset read-back, and digest verification remain independent of GitHub Artifact Attestations.
+1. **prepare** — validate current-main identity, permanent CI/Security evidence, proof authorization, manifest/version/notes, and any already-published release;
+2. **build** — execute the repository release-build adapter, add source/SBOM evidence, seal the payload with `release-metadata.json` and `SHA256SUMS`, and upload the sealed payload as a workflow artifact;
+3. **attest** — optionally download and attest that sealed payload;
+4. **publish** — download the same sealed payload, create or recover the immutable tag/draft Release, upload only missing or mismatched assets, verify the draft, and publish.
+
+The sealed workflow artifact is the retry boundary. When a late job fails, operators should use GitHub **Re-run failed jobs** rather than restarting the whole workflow. GitHub re-runs failed jobs and their dependent jobs while successful earlier jobs remain complete, so a failed attestation or publication does not rebuild a successful sealed payload.
+
+Draft recovery is incremental. Correct existing draft assets are retained; only unexpected or checksum-mismatched assets are removed and re-uploaded. A fully published release is verified during preflight and treated as idempotently complete.
+
+GitHub Artifact Attestations are optional because feature availability depends on repository visibility and GitHub organization plan. The reusable publisher defaults `attest` to `false`. A consumer may explicitly set `attest: true` only when the feature is available; once explicitly enabled, attestation failure is release-fatal. Exact-source gates, SBOM generation, `SHA256SUMS`, sealed-payload verification, and draft read-back remain independent of GitHub Artifact Attestations.
+
+The publisher verifies the draft transaction before making it public. Post-publication verification is intentionally owned by the independent `Release Verification` workflow rather than duplicated inside the publisher.
 
 Tag creation never reruns the proof and a product/release failure never switches runners.
 
@@ -84,6 +95,6 @@ It cannot move/create tags, rebuild or replace assets, change checksums, or chan
 
 ## Backward compatibility
 
-`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain available for older immutable consumers. They are not part of the generated default lifecycle after the direct-runner architecture became normative.
+`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain available for older immutable consumers. The compatibility release pipeline now delegates proof authorization and publication to the same resumable central publisher instead of maintaining a second proof-gate implementation.
 
 Quality is a release-presentation reference, not a runner-controller dependency.
