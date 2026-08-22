@@ -36,6 +36,7 @@ def main() -> None:
     lifecycle = text("docs/LIFECYCLE.md")
     contracts = text("docs/CONTRACTS.md")
     security_model = text("docs/SECURITY-MODEL.md")
+    adoption = text("docs/ADOPTION.md")
     readme = text("README.md")
 
     for needle in (
@@ -273,6 +274,21 @@ def main() -> None:
         security_model,
         "Artifact Attestations are an optional additional trust signal",
         "security model",
+    )
+    require(
+        adoption,
+        "wait for the `Release Promotion` workflow",
+        "adoption guide automatic promotion",
+    )
+    require(
+        adoption,
+        "Do not manually dispatch `Release` after a successful proof",
+        "adoption guide duplicate release prevention",
+    )
+    reject(
+        adoption,
+        "after proof succeeds, dispatch `Release`",
+        "adoption guide obsolete manual promotion",
     )
     require(
         readme,
