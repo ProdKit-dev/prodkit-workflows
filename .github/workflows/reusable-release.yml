@@ -334,6 +334,7 @@ jobs:
       RELEASE_TAG: v${{ inputs.version }}
       TARGET_SHA: ${{ inputs.target_sha }}
       ARTIFACT_DIR: ${{ needs.prepare.outputs.artifact_dir }}
+      RELEASE_OUTPUT_DIR: ${{ needs.prepare.outputs.artifact_dir }}
       BUILD_SCRIPT: ${{ needs.prepare.outputs.build_script }}
       SOURCE_ARCHIVE: ${{ needs.prepare.outputs.source_archive }}
       PRODKIT_RELEASE_PYTHON_VERSION: ${{ inputs.python_version }}
