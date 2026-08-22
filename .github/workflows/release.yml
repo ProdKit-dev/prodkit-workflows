@@ -29,4 +29,6 @@ jobs:
       target_sha: ${{ github.sha }}
       prerelease: ${{ inputs.prerelease }}
       runner_json: '"ubuntu-latest"'
+      proof_workflow_file: .github/workflows/trusted-release-proof.yml
+      reuse_proof_payload: true
       environment: release
