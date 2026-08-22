@@ -35,6 +35,9 @@ jobs:
     name: Branch Cleanup Required
     runs-on: ${{ fromJSON(inputs.runner_json) }}
     timeout-minutes: 10
+    concurrency:
+      group: branch-cleanup-${{ github.repository }}
+      cancel-in-progress: false
     outputs:
       evidence_json: ${{ steps.cleanup.outputs.evidence_json }}
     env:
