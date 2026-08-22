@@ -1,22 +1,23 @@
 # ProdKit Workflows
 
-`prodkit-workflows` is the organization-level library of reusable CI, Security, release, CodeQL, metadata, and governance workloads for ProdKit repositories.
+`prodkit-workflows` is the organization-level library of reusable CI, Security, release, CodeQL, branch-cleanup, metadata, and governance workloads for ProdKit repositories.
 
 The reliability boundary is intentionally simple: **the consumer caller chooses a runner; `prodkit-workflows` executes the workload.** Runner selection is not a separate workflow state machine.
 
 ## Design principles
 
 - **Direct execution.** CI, Security, proof, promotion, release, verification, metadata, CodeQL, and audit callers pass `runner_json` directly to the reusable workload they invoke. There is no default probe/resolver/preflight controller hop.
-- **Thin consumers.** Generated callers define triggers and inputs; reusable workflows own API authorization, evidence checks, build/publish mechanics, and retry semantics. Release callers do not copy a local proof-gate implementation.
+- **Thin consumers.** Generated callers define triggers and inputs; reusable workflows own API authorization, evidence checks, build/publish mechanics, cleanup safety, and retry semantics. Release callers do not copy a local proof-gate implementation.
 - **No expensive gate duplication.** Permanent exact-SHA CI/Security are verified as evidence by Trusted Release Proof; they are not rerun inside proof. The repository release payload is built once during proof and promoted unchanged into publication.
 - **Completion-boundary promotion.** `Trusted Release Proof` finishes first. A separate `Release Promotion` caller starts from its successful `workflow_run` completion event, then dispatches Release. Release can therefore never race a proof run that is still `in_progress`.
 - **One workload job for normal CI and Security.** Compact CI exposes `ci / CI Required`; compact Security exposes `security / Security Required`. Compatibility/scanning dimensions remain visible as steps.
 - **Immutable reuse.** Cross-repository callers pin a full 40-character `prodkit-workflows` commit SHA. Floating branches/tags are not production contracts.
 - **Fork safety.** Generated CI/Security callers force fork-originated pull requests to `ubuntu-latest`. Persistent trusted runners never execute untrusted fork code by default.
+- **Explicit cleanup only.** Branch Cleanup is a post-merge/post-release maintenance operation. It accepts exact branch names, defaults to dry-run, runs on GitHub-hosted infrastructure, and rejects any invocation that is not rooted in explicit `workflow_dispatch` authorization.
 - **Configurable runner target.** Generated callers read optional `PRODKIT_RUNNER_JSON`. When unset, trusted work defaults to `["self-hosted","Linux","X64"]`. This variable is the complete JSON value passed to `runs-on`; it is not a routing mode.
 - **Exact-main releases.** `Trusted Release Proof` certifies the workflow-dispatched `${{ github.sha }}`. `Release Promotion` carries the completed proof run's `head_sha`. `Release` publishes the workflow-dispatched `${{ github.sha }}`. Operators do not copy SHAs between workflows.
 - **Resumable publication.** The proof-produced repository payload and later sealed publication payload are workflow-artifact checkpoints. Late failures resume from successful job boundaries.
-- **Fail closed.** Missing evidence, invalid manifests, failed enabled controls, tag movement, path escapes, unsafe payloads, checksum mismatches, or metadata repair that changes immutable state stop the operation.
+- **Fail closed.** Missing evidence, invalid manifests, failed enabled controls, tag movement, unsafe cleanup targets, path escapes, unsafe payloads, checksum mismatches, or metadata repair that changes immutable state stop the operation.
 
 ## Reusable workload surface
 
@@ -26,6 +27,7 @@ The reliability boundary is intentionally simple: **the consumer caller chooses 
 | Compact Security | `.github/workflows/reusable-security-compact.yml` | `Security Required` |
 | Expanded CI | `.github/workflows/reusable-ci.yml` | `CI Required` |
 | Expanded Security | `.github/workflows/reusable-security.yml` | `Security Required` |
+| Branch cleanup | `.github/workflows/reusable-branch-cleanup.yml` | explicit dry-run/destructive cleanup evidence |
 | Trusted release proof | `.github/workflows/reusable-release-proof.yml` | exact-source proof + promotable repository payload |
 | Release promotion | `.github/workflows/reusable-release-promote.yml` | bounded idempotent Release dispatch |
 | Guarded release publication | `.github/workflows/reusable-release.yml` | prepare → import/seal → optional attest → publish |
@@ -54,6 +56,7 @@ Bootstrap creates:
 .github/workflows/
   ci.yml
   security.yml
+  branch-cleanup.yml
   trusted-release-proof.yml
   release-promotion.yml
   release.yml
@@ -91,9 +94,15 @@ The value must be valid JSON accepted by `runs-on`. Do not use it to route fork 
 
 Compact CI supports Python `3.12`, `3.13`, `3.14` and Node `20`, `22`, `24`; a caller may choose any supported non-empty subset. PostgreSQL, container, hygiene, and custom adapters are independently enabled.
 
-Compact execution keeps dimensions as steps in one required workload job. Enabled steps may use `continue-on-error` so later evidence can still be collected, but the final aggregate verifier fails the job if any required setup/control failed. GitHub may render a continued step as visually successful even when its recorded `outcome` is `failure`; the final aggregate intentionally evaluates the recorded outcomes.
+Compact execution keeps dimensions as steps in one required workload job. Enabled steps may use `continue-on-error` so later evidence can still be collected, but the final aggregate verifier fails the job if any required setup/control failed. A visually continued step must not be interpreted as a passed control. Aggregate verification intentionally skips GitHub-cancelled superseded runs while remaining fail-closed for genuine completed failures.
 
 Expanded `reusable-ci.yml` and `reusable-security.yml` remain available when a repository deliberately needs parallel matrix jobs.
+
+## Branch Cleanup
+
+Branch Cleanup is deliberately outside release authorization. After a merge or release is fully closed, explicitly dispatch the generated `Branch Cleanup` workflow with a JSON array of exact stale branch names. Wildcards and pattern expansion are not supported.
+
+The canonical caller defaults to `dry_run=true` and runs on `ubuntu-latest`. The reusable workflow binds cleanup to the reviewed default-branch SHA, preflights the complete target set before mutation, rejects protected/default/open-PR branches, revalidates branch identity immediately before deletion, and verifies deleted refs are absent afterward. A race or unsafe target fails closed.
 
 ## Canonical lifecycle
 
@@ -132,6 +141,11 @@ workflow_dispatch Release(version)
 
 workflow_run Release Verification
   -> independent post-publication checksum/digest verification
+
+workflow_dispatch Branch Cleanup
+  -> dry-run explicit stale branch names
+  -> operator reviews cleanup evidence
+  -> destructive dispatch deletes only the exact validated refs
 ```
 
 GitHub Artifact Attestations are an optional additional provenance layer. They default off because feature availability depends on repository visibility and organization plan. Explicitly enabling attestations keeps failure release-fatal; the baseline release still requires exact-source proof, proof-produced payload digests, SBOM, `SHA256SUMS`, sealed-payload verification, and independent published-asset verification.
@@ -153,6 +167,6 @@ Organization rulesets should require:
 - `ci / CI Required`
 - `security / Security Required`
 
-Run `scripts/audit_org.py` or the Organization Audit workflow to find missing lifecycle callers, floating central refs, obsolete central SHAs, retired runner-controller usage, promotion-before-proof-completion topology, duplicated consumer proof gates, or local publication implementations.
+Run `scripts/audit_org.py` or the Organization Audit workflow to find missing lifecycle callers, floating central refs, obsolete central SHAs, retired runner-controller usage, non-dispatch cleanup callers, promotion-before-proof-completion topology, duplicated consumer proof gates, or local publication implementations.
 
 See `docs/CONTRACTS.md`, `docs/RUNNERS.md`, `docs/LIFECYCLE.md`, and `docs/ADOPTION.md` for the normative integration contract.
