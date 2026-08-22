@@ -23,6 +23,7 @@ def reject(haystack: str, needle: str, label: str) -> None:
 def main() -> None:
     promote = text(".github/workflows/reusable-release-promote.yml")
     verification = text(".github/workflows/reusable-release-verification.yml")
+    reusable_release = text(".github/workflows/reusable-release.yml")
     proof_template = text("templates/caller/trusted-release-proof.yml")
     verification_template = text("templates/caller/release-verification.yml")
     release_template = text("templates/caller/release.yml")
@@ -79,6 +80,13 @@ def main() -> None:
     )
     require(release_template, 'run.get("path") == workflow_file', "release caller template")
     reject(release_template, "PROOF_WORKFLOW: Trusted Release Proof", "release caller template")
+
+    # The reusable publisher owns version-level serialization. A direct caller
+    # must not claim the same release-${version} group or it can hold the group
+    # while waiting for the called workflow, preventing the called publisher
+    # from ever materializing.
+    require(reusable_release, "group: release-${{ inputs.version }}", "reusable release")
+    reject(release_template, "group: release-${{ inputs.version }}", "release caller template")
 
     require(
         bootstrap,
