@@ -28,6 +28,7 @@ def main() -> None:
     mapping = {
         src / "caller/ci.yml": dest / ".github/workflows/ci.yml",
         src / "caller/security.yml": dest / ".github/workflows/security.yml",
+        src / "caller/branch-cleanup.yml": dest / ".github/workflows/branch-cleanup.yml",
         src / "caller/trusted-release-proof.yml": dest
         / ".github/workflows/trusted-release-proof.yml",
         src / "caller/release-promotion.yml": dest
