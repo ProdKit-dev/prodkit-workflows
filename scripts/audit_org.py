@@ -66,6 +66,7 @@ def main():
     required = {
         "ci.yml": "reusable-ci-compact.yml",
         "security.yml": "reusable-security-compact.yml",
+        "branch-cleanup.yml": "reusable-branch-cleanup.yml",
         "trusted-release-proof.yml": "reusable-release-proof.yml",
         "release-promotion.yml": "reusable-release-promote.yml",
         "release.yml": "reusable-release.yml",
@@ -117,6 +118,26 @@ def main():
 
             if "reusable-runner-policy.yml@" in text or "PRODKIT_RUNNER_MODE" in text:
                 errors.append(f"{filename} uses retired runner-controller orchestration")
+
+            if filename == "branch-cleanup.yml":
+                required_fragments = (
+                    "workflow_dispatch:",
+                    "branches_json:",
+                    "dry_run:",
+                    "contents: write",
+                    "pull-requests: read",
+                    "expected_default_sha: ${{ github.sha }}",
+                    'runner_json: \'"ubuntu-latest"\'',
+                )
+                if any(fragment not in text for fragment in required_fragments):
+                    errors.append(
+                        "branch-cleanup.yml must remain explicit, SHA-bound, GitHub-hosted cleanup"
+                    )
+                for forbidden in ("issue_comment:", "push:", "schedule:"):
+                    if forbidden in text:
+                        errors.append(
+                            "branch-cleanup.yml must not expose automatic or comment-driven mutation triggers"
+                        )
 
             if filename == "trusted-release-proof.yml":
                 if "workflow_dispatch:" not in text:
