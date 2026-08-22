@@ -2,6 +2,18 @@
 
 All notable changes to this repository are documented here.
 
+## [0.1.1] - 2026-08-22
+
+- Add centrally governed Branch Cleanup as a normative post-merge/post-release maintenance capability.
+- Require cleanup to be explicitly dispatched with an exact JSON array of branch names, defaulting to dry-run on GitHub-hosted execution.
+- Bind destructive cleanup to the reviewed default-branch SHA and reject the default branch, protected branches, malformed/duplicate targets, and branches that are heads of open pull requests.
+- Revalidate default-branch identity, target protection, open-PR status, and exact target SHA immediately before deletion; verify every deleted ref is absent afterward and fail closed on races.
+- Serialize repository cleanup runs and emit structured cleanup evidence for operator review.
+- Add the canonical `branch-cleanup.yml` consumer caller to bootstrap output and make organization audit/contracts enforce the dispatch-only, exact-SHA-pinned cleanup architecture.
+- Fix compact CI/Security cancellation handling so aggregate verifiers do not turn GitHub-cancelled superseded runs into false failures while genuine failures remain fail-closed.
+- Align the README reusable-workload surface, generated caller list, lifecycle, and organization-audit guidance with the new cleanup contract.
+- Keep `v0.1.0` immutable; `v0.1.1` is the next reviewed control-plane checkpoint for consumers to pin by exact commit SHA.
+
 ## [0.1.0] - 2026-08-22
 
 - Promote the organization workflow control plane from bootstrap status to the first stable operational release.
