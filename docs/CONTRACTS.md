@@ -4,12 +4,12 @@ This document is normative for consumers of `ProdKit-dev/prodkit-workflows`. Reu
 
 ## Ownership boundary
 
-`prodkit-workflows` owns reusable workload implementation: CI/Security aggregation, toolchain setup, evidence generation, exact-source proof mechanics, completed-proof promotion, guarded publication, metadata repair, CodeQL orchestration, branch-cleanup safety enforcement, and organization audit.
+`prodkit-workflows` owns reusable workload implementation: CI/Security aggregation, toolchain setup, evidence generation, exact-source proof mechanics, completed-proof promotion, guarded publication, metadata repair, CodeQL orchestration, branch-cleanup safety enforcement, post-gate cleanup authorization, and organization audit.
 
 Consumer repositories own:
 
 - workflow triggers and direct runner target selection;
-- explicit branch-cleanup target selection at dispatch time;
+- explicit branch-cleanup target selection, either as dispatch input or a reviewed dormant-caller repository variable;
 - `.prodkit/release.json`;
 - canonical version notes/changelog;
 - repository-specific adapters beneath `.prodkit/workflows/`.
@@ -28,6 +28,7 @@ Normative reusable workloads:
 - `reusable-security.yml` — expanded compatibility Security;
 - `reusable-codeql.yml`;
 - `reusable-branch-cleanup.yml`;
+- `reusable-gated-branch-cleanup.yml`;
 - `reusable-release-proof.yml`;
 - `reusable-release-promote.yml`;
 - `reusable-release.yml`;
@@ -64,7 +65,7 @@ New callers must not contain:
 
 A workload gets one runner target. Product/security/release failures never cause automatic execution on a second trust boundary.
 
-Branch Cleanup is the deliberate maintenance exception: its canonical caller passes `"ubuntu-latest"` directly so repository housekeeping does not depend on persistent product runners.
+Branch Cleanup is the deliberate maintenance exception: its canonical caller passes `"ubuntu-latest"` directly so repository housekeeping does not depend on persistent product runners. Post-Gate Branch Cleanup may use `PRODKIT_RUNNER_JSON` when an installation cannot execute trusted private-repository control-plane jobs on GitHub-hosted infrastructure; its fallback remains `"ubuntu-latest"`.
 
 ## Lifecycle
 
@@ -74,7 +75,7 @@ Branch Cleanup is the deliberate maintenance exception: its canonical caller pas
 4. **Promotion** — a separate `Release Promotion` caller is triggered by `workflow_run` only after `Trusted Release Proof` is `completed` with `success`; it carries the completed proof's `head_sha` into the bounded reusable promotion workload and exits after idempotently dispatching Release.
 5. **Publication** — Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.
 6. **Verification** — `Release Verification` independently checks the immutable published transaction.
-7. **Cleanup** — after release/merge closure, explicitly dispatch Branch Cleanup against exact stale branch names; cleanup is not part of publication authorization and never moves tags/releases.
+7. **Cleanup** — after merge/release closure, either explicitly dispatch Branch Cleanup against exact stale branch names or activate the dormant Post-Gate Branch Cleanup caller with a reviewed exact branch list. Both routes end at the same dispatch-only, exact-SHA-bound deletion engine and never move tags/releases.
 8. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
 
 This proof-completion boundary is mandatory. Publication authorization accepts only completed successful proof runs, so dispatching Release from a job inside the still-running proof workflow is a race and is non-compliant.
@@ -132,14 +133,16 @@ CodeQL is opt-in. Generated CodeQL callers do not execute fork PRs on persistent
 
 ## Branch Cleanup
 
-`reusable-branch-cleanup.yml` owns destructive branch-cleanup safety and execution. The canonical generated caller is `workflow_dispatch` only and passes:
+`reusable-branch-cleanup.yml` owns destructive branch-cleanup safety and execution. The canonical generated caller remains `workflow_dispatch` only and passes:
 
 ```yaml
 branches_json: ${{ inputs.branches_json }}
-expected_default_sha: ${{ github.sha }}
+expected_default_sha: ${{ inputs.expected_default_sha != '' && inputs.expected_default_sha || github.sha }}
 dry_run: ${{ inputs.dry_run }}
 runner_json: '"ubuntu-latest"'
 ```
+
+`expected_default_sha` is optional at the caller boundary. A direct operator dispatch may omit it and preserve the v0.1.1 behavior of binding cleanup to the dispatched `${{ github.sha }}`. A trusted upstream authorizer may supply an already-reviewed exact SHA; if the default branch moved before cleanup begins, the reusable cleanup workload fails before deletion.
 
 `branches_json` is a non-empty JSON array of unique exact branch names; wildcards/pattern expansion are not supported. The reusable workflow accepts at most 100 targets and applies conservative Git ref-name validation.
 
@@ -154,7 +157,41 @@ Before any deletion it:
 
 When `dry_run=true`, validated present refs are reported as `would_delete` and no mutation occurs. When mutation is enabled, the workflow rechecks the exact default SHA before deletion and before each subsequent ref deletion, deletes only the explicit validated targets, then reads each ref back and requires `404` absence. The workflow emits structured `cleanup-evidence.json` content to logs/step summary and exposes compact evidence as a workflow output.
 
-The canonical caller grants `contents: write` and `pull-requests: read` only to the cleanup job. It must not be exposed through `push`, `schedule`, or `issue_comment`; organization audit rejects those mutation triggers. Cleanup is maintenance, not a required branch-protection check.
+The canonical caller grants `contents: write` and `pull-requests: read` only to the cleanup job. It must not be exposed through `push`, `schedule`, `issue_comment`, or `workflow_run`; organization audit rejects those mutation triggers. Cleanup is maintenance, not a required branch-protection check.
+
+## Post-Gate Branch Cleanup
+
+`reusable-gated-branch-cleanup.yml` is an authorization/dispatch workload. It **does not delete Git refs** and receives no `contents: write` permission.
+
+The generated `post-gate-branch-cleanup.yml` caller is `workflow_run` only, listens by default for `CI`, `Security`, and `CodeQL` completions on `main`, and is dormant unless the non-secret repository variable `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` is a non-empty JSON array of exact reviewed branch names.
+
+The generated caller supplies:
+
+```yaml
+branches_json: ${{ vars.PRODKIT_GATED_CLEANUP_BRANCHES_JSON }}
+expected_default_sha: ${{ github.event.workflow_run.head_sha }}
+required_gates_json: ${{ vars.PRODKIT_GATED_CLEANUP_GATES_JSON != '' && vars.PRODKIT_GATED_CLEANUP_GATES_JSON || '[{"name":"CI","path":".github/workflows/ci.yml"},{"name":"Security","path":".github/workflows/security.yml"}]' }}
+cleanup_workflow_file: branch-cleanup.yml
+```
+
+The authorization reusable requires:
+
+- `github.event_name == workflow_run`;
+- the triggering workflow run to originate from a `push`;
+- the trigger `head_sha` to equal `expected_default_sha`;
+- the trigger `head_branch` to equal the repository default branch;
+- the current default-branch ref to still equal that exact SHA;
+- a non-empty unique branch list and a non-empty unique required-gate list;
+- each required gate to be identified by an explicit `.github/workflows/*.yml` path and display name;
+- the target cleanup workflow at the exact SHA to exist, expose only `workflow_dispatch`, include the exact-SHA input, and delegate to `reusable-branch-cleanup.yml`.
+
+The authorizer queries exact-SHA `push` runs and selects the latest run for each required workflow path. Missing/in-progress gates produce a successful `deferred` authorization result without dispatch. A completed non-success required gate produces `gate_failed` and fails closed. When every required gate is successful, the authorizer selects the last completed required gate using workflow update time plus run ID as a deterministic tie-breaker; only the matching trigger event may dispatch cleanup. Other completion events produce `not_final_gate` without dispatch.
+
+The default branch is reread immediately before dispatch. The authorizer then calls the permanent Branch Cleanup workflow with `dry_run=false`, the exact reviewed branch list, and the exact certified SHA. The downstream dispatch-only cleanup workflow revalidates the SHA before any mutation.
+
+`PRODKIT_GATED_CLEANUP_GATES_JSON` may override the default CI/Security gates. If a repository adds another required gate, that workflow's display name must also be present in the caller's static `workflow_run.workflows` list so its completion can become the final authorization event.
+
+The post-gate caller receives `actions: write` only to dispatch the permanent cleanup workflow. It remains `contents: read`; direct branch deletion in the authorizer is non-compliant.
 
 ## Trusted Release Proof
 
@@ -225,7 +262,7 @@ The visible organization contract is:
 
 - tag `vX.Y.Z`;
 - canonical GitHub Release title defined by the repository manifest;
-- canonical version document begins `# vX.Y.Z — <milestone>`;
+- canonical version document begins `# vX.Y.Z — <milestone>` or `# ProdKit Workflows vX.Y.Z` for the workflow control plane;
 - GitHub Release body equals the canonical version document.
 
 ## Metadata repair
@@ -243,6 +280,7 @@ It cannot create/move tags, create a missing Release, rebuild/upload/delete/repl
 - CI;
 - Security;
 - Branch Cleanup;
+- Post-Gate Branch Cleanup;
 - Trusted Release Proof;
 - Release Promotion;
 - Release;
@@ -250,7 +288,7 @@ It cannot create/move tags, create a missing Release, rebuild/upload/delete/repl
 - Release Metadata;
 - optionally CodeQL.
 
-Generated callers directly invoke the appropriate reusable workload and directly provide `runner_json`. CI/Security use compact workflows by default. Branch Cleanup deliberately uses GitHub-hosted execution and an explicit operator dispatch.
+Generated callers directly invoke the appropriate reusable workload and directly provide `runner_json`. CI/Security use compact workflows by default. Branch Cleanup remains an explicit dispatch-only mutation boundary; Post-Gate Branch Cleanup is a dormant workflow-run authorizer that can only dispatch that boundary.
 
 ## Organization audit
 
@@ -259,14 +297,15 @@ The organization auditor requires these workflow families at the requested immut
 - `ci.yml` -> `reusable-ci-compact.yml`;
 - `security.yml` -> `reusable-security-compact.yml`;
 - `branch-cleanup.yml` -> `reusable-branch-cleanup.yml`;
+- `post-gate-branch-cleanup.yml` -> `reusable-gated-branch-cleanup.yml`;
 - `trusted-release-proof.yml` -> `reusable-release-proof.yml`;
 - `release-promotion.yml` -> `reusable-release-promote.yml`;
 - `release.yml` -> `reusable-release.yml`;
 - `release-verification.yml` -> `reusable-release-verification.yml`;
 - `release-metadata.yml` -> `reusable-release-metadata-current.yml`.
 
-It also rejects floating references, retired runner-controller usage, automatic/comment-driven branch cleanup, promotion before proof workflow completion, manually copied release target semantics, duplicated consumer proof gates, missing central proof delegation, and local publication implementation in consumer `release.yml`.
+It also rejects floating references, retired runner-controller usage, non-dispatch destructive branch cleanup, non-`workflow_run` post-gate cleanup, post-gate callers with `contents: write`, promotion before proof workflow completion, manually copied release target semantics, duplicated consumer proof gates, missing central proof delegation, and local publication implementation in consumer `release.yml`.
 
 ## Compatibility policy
 
-Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. Proof-payload reuse defaults off in that compatibility surface so historical proof adapters remain valid. New bootstrap output and current organization policy use the direct proof-once/promote-after-completion/publish-once architecture plus centrally governed explicit branch cleanup.
+Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. Proof-payload reuse defaults off in that compatibility surface so historical proof adapters remain valid. New bootstrap output and current organization policy use the direct proof-once/promote-after-completion/publish-once architecture plus the dispatch-only Branch Cleanup engine and optional dormant exact-main Post-Gate Branch Cleanup authorizer.

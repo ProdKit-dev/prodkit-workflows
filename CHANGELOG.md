@@ -2,6 +2,18 @@
 
 All notable changes to this repository are documented here.
 
+## [0.1.2] - 2026-08-23
+
+- Add reusable exact-main post-gate branch-cleanup authorization without duplicating the v0.1.1 deletion engine.
+- Keep `Branch Cleanup` explicitly `workflow_dispatch` only while adding an optional `expected_default_sha` handoff so upstream authorization and destructive cleanup remain bound to the same immutable default-branch revision.
+- Add `reusable-gated-branch-cleanup.yml`, which accepts an exact reviewed branch list, requires a `workflow_run` from a default-branch push, verifies configurable exact-SHA workflow gates by immutable workflow path, and dispatches the permanent Branch Cleanup workflow only after all required gates are green.
+- Defer safely when required gates are missing/in progress, fail closed on completed non-success gates, ignore stale-main triggers, and authorize dispatch only from the last completed required gate event to avoid normal CI/Security/CodeQL fan-out duplication.
+- Verify the target cleanup workflow is `workflow_dispatch` only and exposes the exact-SHA reusable cleanup contract before dispatch; grant the authorization layer `actions: write` but not `contents: write`, so it cannot delete refs itself.
+- Add permanent dormant `post-gate-branch-cleanup.yml` callers. They activate only when `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` contains a non-empty reviewed exact branch list and support an optional `PRODKIT_GATED_CLEANUP_GATES_JSON` exact workflow-path gate set.
+- Extend bootstrap, organization audit, regression contracts, adoption guidance, and control-plane self-callers to enforce the two-layer cleanup topology and immutable central pinning.
+- Preserve the v0.1.1 Branch Cleanup safety model unchanged: complete preflight, protected/default/open-PR rejection, exact target-SHA revalidation, repeated default-SHA checks, serialized deletion, idempotent absent refs, and post-delete absence verification.
+- Keep `v0.1.0` and `v0.1.1` immutable; `v0.1.2` is an additive workflow-control-plane checkpoint.
+
 ## [0.1.1] - 2026-08-22
 
 - Add centrally governed Branch Cleanup as a normative post-merge/post-release maintenance capability.

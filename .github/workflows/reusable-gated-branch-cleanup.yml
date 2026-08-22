@@ -1,0 +1,347 @@
+name: Reusable Gated Branch Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      branches_json:
+        description: JSON array of explicit branch names already reviewed for destructive cleanup
+        required: true
+        type: string
+      expected_default_sha:
+        description: Exact default-branch SHA associated with the workflow_run trigger
+        required: true
+        type: string
+      required_gates_json:
+        description: JSON array of required exact-SHA push workflow objects with name and path
+        required: false
+        default: '[{"name":"CI","path":".github/workflows/ci.yml"},{"name":"Security","path":".github/workflows/security.yml"}]'
+        type: string
+      cleanup_workflow_file:
+        description: Dispatch-only cleanup workflow filename under .github/workflows
+        required: false
+        default: branch-cleanup.yml
+        type: string
+      runner_json:
+        description: Complete JSON value accepted by runs-on
+        required: false
+        default: '"ubuntu-latest"'
+        type: string
+    outputs:
+      evidence_json:
+        description: Compact gate/dispatch evidence JSON
+        value: ${{ jobs.authorize.outputs.evidence_json }}
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  authorize:
+    name: Gated Branch Cleanup Authorization
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 5
+    concurrency:
+      group: gated-branch-cleanup-${{ github.repository }}-${{ inputs.expected_default_sha }}
+      cancel-in-progress: false
+    outputs:
+      evidence_json: ${{ steps.authorize.outputs.evidence_json }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCHES_JSON: ${{ inputs.branches_json }}
+      EXPECTED_DEFAULT_SHA: ${{ inputs.expected_default_sha }}
+      REQUIRED_GATES_JSON: ${{ inputs.required_gates_json }}
+      CLEANUP_WORKFLOW_FILE: ${{ inputs.cleanup_workflow_file }}
+      EVENT_NAME: ${{ github.event_name }}
+      TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+      TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+      TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      TRIGGER_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - id: authorize
+        name: Verify exact-main gates and dispatch cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          expected = os.environ["EXPECTED_DEFAULT_SHA"]
+          cleanup_workflow_file = os.environ["CLEANUP_WORKFLOW_FILE"]
+          event_name = os.environ["EVENT_NAME"]
+          trigger_event = os.environ.get("TRIGGER_EVENT", "")
+          trigger_head_sha = os.environ.get("TRIGGER_HEAD_SHA", "")
+          trigger_head_branch = os.environ.get("TRIGGER_HEAD_BRANCH", "")
+          try:
+              trigger_run_id = int(os.environ.get("TRIGGER_RUN_ID", "0"))
+          except ValueError as exc:
+              raise SystemExit("workflow_run trigger id must be an integer") from exc
+
+          api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+          root = f"{api}/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-reusable-gated-branch-cleanup",
+          }
+
+          def call(method: str, path: str, payload=None, *, allow_404: bool = False):
+              body = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(root + path, data=body, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      raw = response.read()
+                      return response.status, (json.loads(raw) if raw else None)
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode("utf-8", errors="replace")
+                  if allow_404 and exc.code == 404:
+                      return 404, None
+                  raise SystemExit(
+                      f"GitHub API {method} {path} failed: HTTP {exc.code}: {detail[:500]}"
+                  ) from exc
+
+          def workflow_events(text: str):
+              lines = text.splitlines()
+              start = None
+              on_key = re.compile(r'^\s*(?:on|"on"|\'on\'):\s*(?:#.*)?$')
+              for index, line in enumerate(lines):
+                  if on_key.fullmatch(line) and not line[: len(line) - len(line.lstrip())]:
+                      start = index
+                      break
+              if start is None:
+                  return None
+              key_pattern = re.compile(
+                  r'^  (?:(?:"([A-Za-z0-9_-]+)")|(?:\'([A-Za-z0-9_-]+)\')|([A-Za-z0-9_-]+)):\s*(?:.*)?$'
+              )
+              events = set()
+              for line in lines[start + 1 :]:
+                  if not line.strip() or line.lstrip().startswith("#"):
+                      continue
+                  indent = len(line) - len(line.lstrip(" "))
+                  if indent == 0:
+                      break
+                  if indent > 2:
+                      continue
+                  if indent != 2:
+                      return None
+                  match = key_pattern.fullmatch(line)
+                  if not match:
+                      return None
+                  events.add(next(group for group in match.groups() if group is not None))
+              return events
+
+          def write_evidence(evidence: dict) -> None:
+              compact = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+                  handle.write(f"evidence_json={compact}\n")
+              print(json.dumps(evidence, indent=2, sort_keys=True))
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as handle:
+                      handle.write("## Gated branch cleanup authorization\n\n")
+                      handle.write(f"- Repository: `{repo}`\n")
+                      handle.write(f"- Exact default SHA: `{expected}`\n")
+                      handle.write(f"- State: **{evidence['state']}**\n")
+                      handle.write(f"- Cleanup workflow: `{cleanup_workflow_file}`\n")
+                      handle.write(f"- Requested branches: `{evidence['requested_branch_count']}`\n\n")
+                      for name, gate in evidence.get("gates", {}).items():
+                          handle.write(
+                              f"- Gate `{name}`: run `{gate.get('id')}` — "
+                              f"`{gate.get('status')}` / `{gate.get('conclusion')}`\n"
+                          )
+
+          if event_name != "workflow_run":
+              raise SystemExit(
+                  f"gated branch cleanup is authorized only from workflow_run; got {event_name}"
+              )
+          if trigger_event != "push":
+              raise SystemExit(
+                  f"gated branch cleanup requires a push-origin workflow_run; got {trigger_event!r}"
+              )
+          if not re.fullmatch(r"[0-9a-f]{40}", expected):
+              raise SystemExit("expected_default_sha must be a full lowercase 40-character SHA")
+          if trigger_head_sha != expected:
+              raise SystemExit(
+                  f"trigger SHA mismatch: workflow_run={trigger_head_sha!r} expected={expected!r}"
+              )
+          if not re.fullmatch(r"[A-Za-z0-9._-]+\.ya?ml", cleanup_workflow_file):
+              raise SystemExit("cleanup_workflow_file must be a workflow filename, not a path")
+
+          try:
+              branches = json.loads(os.environ["BRANCHES_JSON"])
+          except json.JSONDecodeError as exc:
+              raise SystemExit(f"branches_json must be valid JSON: {exc}") from exc
+          if not isinstance(branches, list) or not branches:
+              raise SystemExit("branches_json must be a non-empty JSON array")
+          if len(branches) > 100 or not all(isinstance(branch, str) for branch in branches):
+              raise SystemExit("branches_json must contain at most 100 string branch names")
+          if len(set(branches)) != len(branches):
+              raise SystemExit("branches_json contains duplicate branch names")
+
+          try:
+              gates = json.loads(os.environ["REQUIRED_GATES_JSON"])
+          except json.JSONDecodeError as exc:
+              raise SystemExit(f"required_gates_json must be valid JSON: {exc}") from exc
+          if not isinstance(gates, list) or not gates or len(gates) > 20:
+              raise SystemExit("required_gates_json must be a non-empty array of at most 20 gates")
+          normalized_gates = []
+          seen_paths = set()
+          for item in gates:
+              if not isinstance(item, dict) or set(item) != {"name", "path"}:
+                  raise SystemExit("every required gate must contain exactly name and path")
+              name = item.get("name")
+              path = item.get("path")
+              if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9 ._/-]{1,80}", name):
+                  raise SystemExit(f"invalid gate name: {name!r}")
+              if not isinstance(path, str) or not re.fullmatch(
+                  r"\.github/workflows/[A-Za-z0-9._/-]+\.ya?ml", path
+              ):
+                  raise SystemExit(f"invalid gate workflow path: {path!r}")
+              if ".." in path or "//" in path or path in seen_paths:
+                  raise SystemExit(f"unsafe or duplicate gate workflow path: {path!r}")
+              seen_paths.add(path)
+              normalized_gates.append({"name": name, "path": path})
+
+          _, repository = call("GET", "")
+          default_branch = repository.get("default_branch")
+          if not isinstance(default_branch, str) or not default_branch:
+              raise SystemExit("repository default branch could not be determined")
+          if trigger_head_branch != default_branch:
+              raise SystemExit(
+                  f"workflow_run head branch is not the default branch: "
+                  f"expected {default_branch}, got {trigger_head_branch!r}"
+              )
+
+          ref_path = "/git/ref/" + urllib.parse.quote(f"heads/{default_branch}", safe="/")
+          _, ref = call("GET", ref_path)
+          current_sha = str((ref.get("object") or {}).get("sha") or "")
+          evidence = {
+              "repository": repo,
+              "default_branch": default_branch,
+              "expected_default_sha": expected,
+              "trigger_run_id": trigger_run_id,
+              "requested_branch_count": len(branches),
+              "cleanup_workflow_file": cleanup_workflow_file,
+              "gates": {},
+              "state": "validating",
+          }
+          if current_sha != expected:
+              evidence["state"] = "stale_trigger"
+              evidence["observed_default_sha"] = current_sha
+              write_evidence(evidence)
+              raise SystemExit(0)
+
+          workflow_path = f".github/workflows/{cleanup_workflow_file}"
+          encoded_path = urllib.parse.quote(workflow_path, safe="/")
+          status, workflow_file = call(
+              "GET", f"/contents/{encoded_path}?ref={expected}", allow_404=True
+          )
+          if status == 404:
+              raise SystemExit(f"cleanup workflow is missing at exact SHA: {workflow_path}")
+          decoded = base64.b64decode(workflow_file.get("content") or "").decode(
+              "utf-8", errors="replace"
+          )
+          if workflow_events(decoded) != {"workflow_dispatch"}:
+              raise SystemExit("target cleanup workflow must be workflow_dispatch-only")
+          if "expected_default_sha:" not in decoded or "reusable-branch-cleanup.yml" not in decoded:
+              raise SystemExit(
+                  "target cleanup workflow does not expose the exact-SHA reusable cleanup contract"
+              )
+
+          query = urllib.parse.urlencode(
+              {"head_sha": expected, "event": "push", "per_page": 100}
+          )
+          _, runs_payload = call("GET", f"/actions/runs?{query}")
+          selected = {}
+          for run in runs_payload.get("workflow_runs", []):
+              path = str(run.get("path") or "")
+              if path not in seen_paths:
+                  continue
+              if run.get("head_sha") != expected or run.get("event") != "push":
+                  continue
+              previous = selected.get(path)
+              if previous is None or int(run.get("id", 0)) > int(previous.get("id", 0)):
+                  selected[path] = run
+
+          pending = []
+          failed = []
+          successful_runs = []
+          for gate in normalized_gates:
+              run = selected.get(gate["path"])
+              if run is None:
+                  evidence["gates"][gate["name"]] = {
+                      "id": None,
+                      "status": "missing",
+                      "conclusion": None,
+                      "path": gate["path"],
+                  }
+                  pending.append(gate["name"])
+                  continue
+              state = {
+                  "id": run.get("id"),
+                  "status": run.get("status"),
+                  "conclusion": run.get("conclusion"),
+                  "path": gate["path"],
+                  "updated_at": run.get("updated_at"),
+              }
+              evidence["gates"][gate["name"]] = state
+              if run.get("status") != "completed":
+                  pending.append(gate["name"])
+              elif run.get("conclusion") != "success":
+                  failed.append(gate["name"])
+              else:
+                  successful_runs.append(run)
+
+          if failed:
+              evidence["state"] = "gate_failed"
+              evidence["failed_gates"] = failed
+              write_evidence(evidence)
+              raise SystemExit("required exact-SHA cleanup gates failed: " + ", ".join(failed))
+          if pending:
+              evidence["state"] = "deferred"
+              evidence["pending_gates"] = pending
+              write_evidence(evidence)
+              raise SystemExit(0)
+
+          final_gate = max(
+              successful_runs,
+              key=lambda run: (str(run.get("updated_at") or ""), int(run.get("id", 0))),
+          )
+          final_gate_id = int(final_gate.get("id", 0))
+          evidence["final_gate_run_id"] = final_gate_id
+          if trigger_run_id != final_gate_id:
+              evidence["state"] = "not_final_gate"
+              write_evidence(evidence)
+              raise SystemExit(0)
+
+          _, ref = call("GET", ref_path)
+          current_sha = str((ref.get("object") or {}).get("sha") or "")
+          if current_sha != expected:
+              evidence["state"] = "default_moved_before_dispatch"
+              evidence["observed_default_sha"] = current_sha
+              write_evidence(evidence)
+              raise SystemExit(0)
+
+          workflow_id = urllib.parse.quote(cleanup_workflow_file, safe="")
+          dispatch_payload = {
+              "ref": default_branch,
+              "inputs": {
+                  "branches_json": json.dumps(branches, separators=(",", ":")),
+                  "dry_run": "false",
+                  "expected_default_sha": expected,
+              },
+          }
+          call("POST", f"/actions/workflows/{workflow_id}/dispatches", dispatch_payload)
+          evidence["state"] = "dispatched"
+          write_evidence(evidence)
+          PY

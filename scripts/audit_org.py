@@ -102,6 +102,7 @@ def main():
         "ci.yml": "reusable-ci-compact.yml",
         "security.yml": "reusable-security-compact.yml",
         "branch-cleanup.yml": "reusable-branch-cleanup.yml",
+        "post-gate-branch-cleanup.yml": "reusable-gated-branch-cleanup.yml",
         "trusted-release-proof.yml": "reusable-release-proof.yml",
         "release-promotion.yml": "reusable-release-promote.yml",
         "release.yml": "reusable-release.yml",
@@ -159,9 +160,10 @@ def main():
                     "workflow_dispatch:",
                     "branches_json:",
                     "dry_run:",
+                    "expected_default_sha:",
                     "contents: write",
                     "pull-requests: read",
-                    "expected_default_sha: ${{ github.sha }}",
+                    "inputs.expected_default_sha != '' && inputs.expected_default_sha || github.sha",
                     'runner_json: \'"ubuntu-latest"\'',
                 )
                 if any(fragment not in text for fragment in required_fragments):
@@ -171,6 +173,33 @@ def main():
                 if workflow_events(text) != {"workflow_dispatch"}:
                     errors.append(
                         "branch-cleanup.yml must expose workflow_dispatch as its only trigger"
+                    )
+
+            if filename == "post-gate-branch-cleanup.yml":
+                required_fragments = (
+                    "workflow_run:",
+                    'workflows: ["CI", "Security", "CodeQL"]',
+                    "types: [completed]",
+                    "branches: [main]",
+                    "github.event.workflow_run.event == 'push'",
+                    "PRODKIT_GATED_CLEANUP_BRANCHES_JSON != ''",
+                    "actions: write",
+                    "expected_default_sha: ${{ github.event.workflow_run.head_sha }}",
+                    "PRODKIT_GATED_CLEANUP_GATES_JSON",
+                    "cleanup_workflow_file: branch-cleanup.yml",
+                    "PRODKIT_RUNNER_JSON",
+                )
+                if any(fragment not in text for fragment in required_fragments):
+                    errors.append(
+                        "post-gate-branch-cleanup.yml must remain dormant, exact-SHA and gate-driven"
+                    )
+                if workflow_events(text) != {"workflow_run"}:
+                    errors.append(
+                        "post-gate-branch-cleanup.yml must expose workflow_run as its only trigger"
+                    )
+                if "contents: write" in text:
+                    errors.append(
+                        "post-gate-branch-cleanup.yml must delegate deletion to Branch Cleanup"
                     )
 
             if filename == "trusted-release-proof.yml":

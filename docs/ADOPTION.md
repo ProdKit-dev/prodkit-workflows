@@ -19,7 +19,7 @@ python3 scripts/bootstrap_consumer.py \
 
 Edit repository-owned adapters and disable unused capabilities. Keep release metadata in `.prodkit/release.json` aligned with the repository’s actual version sources and release notes.
 
-The generated integration includes `Branch Cleanup`. It is an explicitly dispatched maintenance caller pinned to the same central revision; consumers must not replace it with repository-local branch-deletion code.
+The generated integration includes both `Branch Cleanup` and `Post-Gate Branch Cleanup`. The destructive caller remains explicitly dispatched and pinned to the same central revision; consumers must not replace it with repository-local branch-deletion code. The post-gate caller is a dormant authorization layer and cannot delete refs directly.
 
 ## 4. Configure the runner directly
 
@@ -37,7 +37,7 @@ Fork-originated CI/Security pull requests remain forced to `ubuntu-latest`; do n
 
 There is no automatic runner failover in the normative architecture. If a runner is unavailable, repair it or deliberately change the direct runner target for subsequent runs. See `docs/RUNNERS.md`.
 
-Branch Cleanup is deliberately different: it defaults to GitHub-hosted `ubuntu-latest` so repository housekeeping cannot be blocked by, or execute on, a persistent product runner.
+Branch Cleanup defaults to GitHub-hosted `ubuntu-latest`. Post-Gate Branch Cleanup also prefers GitHub-hosted execution but honors `PRODKIT_RUNNER_JSON` for installations where trusted private-repository control-plane jobs must use a self-hosted runner.
 
 ## 5. Stabilize required checks
 
@@ -77,9 +77,13 @@ Operators should not manually copy commit SHAs between these workflows.
 
 ## 8. Clean obsolete branches safely
 
+### Manual reviewed cleanup
+
 Use the generated `Branch Cleanup` workflow instead of repository-local cleanup scripts or transient operator workflows.
 
 The workflow is `workflow_dispatch` only. Supply `branches_json` as a JSON array of exact branch names. Leave `dry_run` enabled for the first pass, inspect the evidence summary, then deliberately dispatch again with `dry_run=false` when the targets are correct.
+
+The optional `expected_default_sha` input may normally remain empty. When empty, cleanup binds itself to `${{ github.sha }}` at dispatch time. A trusted upstream authorization workflow may provide an already-reviewed exact SHA; if `main` moved before cleanup begins, deletion fails closed.
 
 The reusable cleanup contract fails closed when:
 
@@ -91,17 +95,40 @@ The reusable cleanup contract fails closed when:
 
 The implementation preflights the complete target set before mutation, deletes only explicit names, rechecks the default SHA during mutation, verifies each deleted ref is absent, and writes cleanup evidence to the workflow log/summary. Already-absent branches are idempotent success.
 
-Do not expose cleanup through `push`, `schedule`, or unauthenticated/comment-driven triggers. The canonical caller intentionally runs on GitHub-hosted `ubuntu-latest` and grants `contents: write` only to its cleanup job.
+Do not expose destructive cleanup through `push`, `schedule`, `workflow_run`, or unauthenticated/comment-driven triggers. The canonical Branch Cleanup caller grants `contents: write` only to its cleanup job.
+
+### Optional automatic post-gate authorization
+
+`Post-Gate Branch Cleanup` removes the need for a repository-local temporary cleanup closer. It remains dormant until the repository variable `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` is populated with a non-empty reviewed JSON array of exact branch names.
+
+Recommended operation:
+
+1. run manual Branch Cleanup with `dry_run=true` for the intended exact target list;
+2. review the resulting evidence and ensure every target is expected;
+3. set `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` to that exact JSON list before the main push whose permanent gates should authorize deletion;
+4. leave `PRODKIT_GATED_CLEANUP_GATES_JSON` unset to require exact-SHA CI and Security, or set it to an explicit JSON array of `{name,path}` gate objects;
+5. let the required push workflows complete;
+6. inspect `Post-Gate Branch Cleanup` authorization evidence and the subsequently dispatched `Branch Cleanup` deletion evidence;
+7. clear `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` after the one-shot maintenance request is closed.
+
+The generated caller listens for `CI`, `Security`, and `CodeQL` completions. If you configure another required gate in `PRODKIT_GATED_CLEANUP_GATES_JSON`, add its workflow display name to the caller's static `workflow_run.workflows` list so the final required gate can trigger authorization.
+
+The gated authorizer requires the trigger to be a default-branch `push`, verifies the exact trigger SHA still equals current `main`, validates all required gates by immutable workflow path and exact SHA, and verifies the target Branch Cleanup caller is `workflow_dispatch` only. Missing/in-progress gates defer. A failed/cancelled/skipped required gate fails closed. Only the last completed required gate event dispatches, preventing normal CI/Security/CodeQL completion fan-out from producing duplicate requests.
+
+Immediately before dispatch the authorizer rereads the default branch. It dispatches the permanent Branch Cleanup workflow with `dry_run=false` plus the exact certified SHA. The downstream cleanup engine independently rechecks that SHA before deletion.
+
+The post-gate authorizer has `actions: write` so it can dispatch Branch Cleanup, but it must remain `contents: read`; it does not delete branches itself.
 
 ## 9. Audit drift
 
 Configure `ORG_AUDIT_TOKEN` with read access to the target repositories and run Organization Audit. The auditor rejects:
 
-- missing lifecycle or branch-cleanup callers;
+- missing lifecycle, manual cleanup, or post-gate cleanup callers;
 - floating central refs;
 - obsolete central SHAs;
 - retired runner-controller usage;
-- automatic/comment-driven branch cleanup callers;
+- non-dispatch destructive cleanup callers;
+- post-gate cleanup callers that are not `workflow_run` only, do not use exact-SHA handoff, or obtain `contents: write`;
 - the retired nested Release pipeline as the generated release contract;
 - local publication implementations in consumer `release.yml`.
 

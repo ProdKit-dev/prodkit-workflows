@@ -59,16 +59,23 @@ def main() -> None:
     test_contracts.EXPECTED_GITHUB_WORKFLOWS.update(
         {
             "branch-cleanup.yml",
+            "post-gate-branch-cleanup.yml",
             "trusted-release-proof.yml",
             "release-promotion.yml",
             "release-verification.yml",
             "reusable-release-promote.yml",
             "reusable-release-verification.yml",
             "reusable-branch-cleanup.yml",
+            "reusable-gated-branch-cleanup.yml",
         }
     )
     test_contracts.DEFAULT_CALLERS.update(
-        {"release-promotion.yml", "release-verification.yml", "branch-cleanup.yml"}
+        {
+            "release-promotion.yml",
+            "release-verification.yml",
+            "branch-cleanup.yml",
+            "post-gate-branch-cleanup.yml",
+        }
     )
     test_contracts.EXPECTED_SELF_ADAPTERS.add("release-proof.sh")
     test_contracts.main()
@@ -166,28 +173,76 @@ def main() -> None:
     ):
         require(cleanup, fragment, "reusable branch cleanup")
 
+    gated = ".github/workflows/reusable-gated-branch-cleanup.yml"
+    for fragment in (
+        "workflow_call:",
+        "required_gates_json:",
+        "cleanup_workflow_file:",
+        "Gated Branch Cleanup Authorization",
+        "actions: write",
+        'EVENT_NAME: ${{ github.event_name }}',
+        'TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}',
+        'TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}',
+        'event_name != "workflow_run"',
+        'trigger_event != "push"',
+        "target cleanup workflow must be workflow_dispatch-only",
+        '"head_sha": expected, "event": "push"',
+        'run.get("conclusion") != "success"',
+        'evidence["state"] = "gate_failed"',
+        'evidence["state"] = "deferred"',
+        'evidence["state"] = "not_final_gate"',
+        'evidence["state"] = "stale_trigger"',
+        '"expected_default_sha": expected',
+        '/actions/workflows/{workflow_id}/dispatches',
+        'evidence["state"] = "dispatched"',
+    ):
+        require(gated, fragment, "reusable gated branch cleanup")
+    reject(gated, "/git/refs/", "gated cleanup must delegate deletion")
+    reject(gated, 'method="DELETE"', "gated cleanup must delegate deletion")
+
     caller = "templates/caller/branch-cleanup.yml"
     for fragment in (
         "workflow_dispatch:",
+        "expected_default_sha:",
         "contents: write",
         "pull-requests: read",
         "reusable-branch-cleanup.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "expected_default_sha: ${{ github.sha }}",
+        "inputs.expected_default_sha != '' && inputs.expected_default_sha || github.sha",
         'runner_json: \'"ubuntu-latest"\'',
         "dry_run: ${{ inputs.dry_run }}",
     ):
         require(caller, fragment, "generated branch cleanup caller")
     reject(caller, "issue_comment:", "generated branch cleanup caller authorization")
 
+    post_gate_caller = "templates/caller/post-gate-branch-cleanup.yml"
+    for fragment in (
+        "workflow_run:",
+        'workflows: ["CI", "Security", "CodeQL"]',
+        "types: [completed]",
+        "branches: [main]",
+        "PRODKIT_GATED_CLEANUP_BRANCHES_JSON != ''",
+        "actions: write",
+        "reusable-gated-branch-cleanup.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "expected_default_sha: ${{ github.event.workflow_run.head_sha }}",
+        "PRODKIT_GATED_CLEANUP_GATES_JSON",
+        "cleanup_workflow_file: branch-cleanup.yml",
+        "PRODKIT_RUNNER_JSON",
+    ):
+        require(post_gate_caller, fragment, "generated post-gate cleanup caller")
+    if audit_org.workflow_events((ROOT / post_gate_caller).read_text(encoding="utf-8")) != {"workflow_run"}:
+        raise SystemExit("generated post-gate cleanup caller must be workflow_run-only")
+    reject(post_gate_caller, "contents: write", "post-gate cleanup orchestrator")
+
     self_caller = ".github/workflows/branch-cleanup.yml"
     for fragment in (
         "workflow_dispatch:",
         "branches_json:",
         "dry_run:",
+        "expected_default_sha:",
         "contents: write",
         "pull-requests: read",
         "uses: ./.github/workflows/reusable-branch-cleanup.yml",
-        "expected_default_sha: ${{ github.sha }}",
+        "inputs.expected_default_sha != '' && inputs.expected_default_sha || github.sha",
         'runner_json: \'"ubuntu-latest"\'',
         "dry_run: ${{ inputs.dry_run }}",
     ):
@@ -198,10 +253,30 @@ def main() -> None:
     reject(self_caller, "schedule:", "control-plane branch cleanup caller authorization")
     reject(self_caller, "pull_request_target:", "control-plane branch cleanup caller authorization")
 
+    self_post_gate = ".github/workflows/post-gate-branch-cleanup.yml"
+    for fragment in (
+        "workflow_run:",
+        'workflows: ["CI", "Security", "CodeQL"]',
+        "PRODKIT_GATED_CLEANUP_BRANCHES_JSON != ''",
+        "actions: write",
+        "uses: ./.github/workflows/reusable-gated-branch-cleanup.yml",
+        "expected_default_sha: ${{ github.event.workflow_run.head_sha }}",
+        "cleanup_workflow_file: branch-cleanup.yml",
+    ):
+        require(self_post_gate, fragment, "control-plane post-gate cleanup caller")
+    if audit_org.workflow_events((ROOT / self_post_gate).read_text(encoding="utf-8")) != {"workflow_run"}:
+        raise SystemExit("control-plane post-gate cleanup caller must be workflow_run-only")
+    reject(self_post_gate, "contents: write", "control-plane post-gate cleanup orchestrator")
+
     require(
         "scripts/audit_org.py",
         'workflow_events(text) != {"workflow_dispatch"}',
         "branch cleanup trigger audit",
+    )
+    require(
+        "scripts/audit_org.py",
+        '"post-gate-branch-cleanup.yml": "reusable-gated-branch-cleanup.yml"',
+        "post-gate cleanup organization audit",
     )
 
 
