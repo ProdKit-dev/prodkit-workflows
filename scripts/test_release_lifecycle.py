@@ -22,10 +22,12 @@ def reject(haystack: str, needle: str, label: str) -> None:
 
 def main() -> None:
     promote = text(".github/workflows/reusable-release-promote.yml")
+    reusable_proof = text(".github/workflows/reusable-release-proof.yml")
     verification = text(".github/workflows/reusable-release-verification.yml")
     reusable_release = text(".github/workflows/reusable-release.yml")
     compatibility_release = text(".github/workflows/reusable-release-pipeline.yml")
     proof_template = text("templates/caller/trusted-release-proof.yml")
+    proof_adapter_template = text("templates/consumer/.prodkit/workflows/release-proof.sh")
     verification_template = text("templates/caller/release-verification.yml")
     release_template = text("templates/caller/release.yml")
     bootstrap = text("scripts/bootstrap_consumer.py")
@@ -61,13 +63,40 @@ def main() -> None:
     for forbidden in ("actions: write", "contents: write", "time.sleep(", "while time.time()"):
         reject(verification, forbidden, "reusable release verification")
 
+    # Proof consumes permanent exact-SHA evidence instead of rerunning CI/Security,
+    # then produces the repository-owned promotable payload exactly once.
     for needle in (
+        "Verify permanent exact-SHA gates",
+        "prepare_release_payload:",
+        "Build promotable release payload once",
+        "release-payload.json",
+        "trusted-release-proof-${{ inputs.source_sha }}",
+    ):
+        require(reusable_proof, needle, "reusable release proof")
+    for needle in (
+        "prepare_release_payload: true",
+        "required_workflows_json: '[\"CI\",\"Security\"]'",
+        "actions: read",
         "reusable-release-proof.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
         "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
         "needs: proof",
         "actions: write",
     ):
         require(proof_template, needle, "trusted release proof caller template")
+    for forbidden in (
+        "ci-python.sh",
+        "ci-node.sh",
+        "security-python.sh",
+        "security-node.sh",
+        "security-custom.sh",
+        "release-build.sh",
+    ):
+        reject(proof_adapter_template, forbidden, "release proof adapter template")
+    require(
+        proof_adapter_template,
+        "Do not rerun CI/Security matrices here",
+        "release proof adapter template",
+    )
 
     for needle in (
         "workflow_run:",
@@ -84,9 +113,11 @@ def main() -> None:
         "proof_workflow_file: .github/workflows/trusted-release-proof.yml",
         "release caller template",
     )
+    require(release_template, "reuse_proof_payload: true", "release caller template")
     reject(release_template, "proof-gate:", "release caller template")
     reject(release_template, "urllib.request", "release caller template")
     require(reusable_release, "proof_workflow_file:", "reusable release proof input")
+    require(reusable_release, "reuse_proof_payload:", "reusable release proof-payload input")
     require(
         reusable_release,
         "x.get('path')==proof_file",
@@ -97,6 +128,14 @@ def main() -> None:
         "missing successful exact-SHA workflow_dispatch proof",
         "reusable release proof authorization",
     )
+    for needle in (
+        "proof_run_id:",
+        "Download proof-produced release payload",
+        "release-payload.json",
+        "proof payload digest mismatch",
+        "Run compatibility release build contract",
+    ):
+        require(reusable_release, needle, "proof-payload reuse")
 
     # The reusable publisher owns version-level serialization. A direct caller
     # must not claim the same release-${version} group.
@@ -116,6 +155,7 @@ def main() -> None:
         "needs: [prepare, build]",
         "needs: [prepare, build, attest]",
         "Create or resume immutable publication",
+        "overwrite: true",
     ):
         require(reusable_release, needle, "resumable release publisher")
     reject(reusable_release, "  release:\n    name: Guarded release", "resumable release publisher")
@@ -160,6 +200,11 @@ def main() -> None:
         "proof_workflow_file: ${{ inputs.proof_workflow_file }}",
         "compatibility release proof forwarding",
     )
+    require(
+        compatibility_release,
+        "reuse_proof_payload: ${{ inputs.reuse_proof_payload }}",
+        "compatibility proof-payload forwarding",
+    )
     reject(compatibility_release, "proof-gate:", "compatibility release pipeline")
     reject(compatibility_release, "urllib.request", "compatibility release pipeline")
 
@@ -183,8 +228,10 @@ def main() -> None:
     )
     require(lifecycle, "Artifact Attestations are optional", "lifecycle documentation")
     require(lifecycle, "Re-run failed jobs", "lifecycle documentation")
+    require(lifecycle, "proof-produced", "lifecycle documentation")
     require(contracts, "Artifact Attestations are capability-dependent", "consumer contracts")
     require(contracts, "sealed payload", "consumer contracts")
+    require(contracts, "proof-produced", "consumer contracts")
     require(
         security_model,
         "Artifact Attestations are an optional additional trust signal",
@@ -196,6 +243,7 @@ def main() -> None:
         "README",
     )
     require(readme, "Re-run failed jobs", "README")
+    require(readme, "proof-produced", "README")
 
     print("release lifecycle contracts passed")
 
