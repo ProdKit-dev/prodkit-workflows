@@ -28,6 +28,7 @@ Normative reusable workloads:
 - `reusable-codeql.yml`;
 - `reusable-release-proof.yml`;
 - `reusable-release.yml`;
+- `reusable-release-verification.yml`;
 - `reusable-release-metadata-current.yml`;
 - `reusable-release-metadata.yml`;
 - `reusable-org-audit.yml`.
@@ -64,9 +65,10 @@ A workload gets one runner target. Product/security/release failures never cause
 
 1. **Pull request** — CI, Security, optional CodeQL.
 2. **Main** — exact-main CI and Security certify the merge SHA.
-3. **Release candidate** — explicitly dispatch `Trusted Release Proof` on the intended current `main`; it certifies `${{ github.sha }}`.
-4. **Publication** — explicitly dispatch `Release` on the same current `main`; it publishes `${{ github.sha }}` after verifying prior exact-SHA evidence.
-5. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
+3. **Release candidate** — dispatch `Trusted Release Proof`; it verifies those permanent gates, runs only release-specific acceptance, and produces the promotable repository payload once.
+4. **Publication** — proof promotion dispatches `Release`; Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.
+5. **Verification** — `Release Verification` independently checks the immutable published transaction.
+6. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
 
 Operators do not manually copy source/target SHAs between proof and release workflows.
 
@@ -121,31 +123,48 @@ CodeQL is opt-in. Generated CodeQL callers do not execute fork PRs on persistent
 
 ## Trusted Release Proof
 
-`reusable-release-proof.yml` accepts an exact `source_sha`, verifies it remains current configured `main`, checks out that exact source, provisions the requested baseline toolchains, validates the repository proof adapter, runs it, confirms tracked source remained immutable, and uploads a canonical proof receipt/evidence artifact.
+`reusable-release-proof.yml` accepts an exact `source_sha`, verifies it remains current configured `main`, and verifies successful permanent exact-SHA `CI` and `Security` push runs before doing release-specific work. It does not rerun those permanent matrices.
+
+The repository `.prodkit/workflows/release-proof.sh` adapter is reserved for acceptance that is genuinely release-specific. For canonical new consumers, the reusable proof then executes `.prodkit/workflows/release-build.sh` once using the configured baseline toolchains, writes the repository-owned files beneath `release-payload/`, records each file's size and SHA-256 in `release-payload.json`, confirms tracked source remained immutable, and uploads the proof artifact.
 
 The generated caller supplies:
 
 ```yaml
 source_sha: ${{ github.sha }}
+required_workflows_json: '["CI","Security"]'
+prepare_release_payload: true
 ```
 
-The proof caller is `workflow_dispatch` only. A proof on another SHA/event does not satisfy publication.
+A proof on another SHA/event does not satisfy publication. The proof-produced payload receipt is bound to repository, exact source SHA, and version.
 
 ## Publication
 
-New generated Release callers call `reusable-release.yml` directly. They do not use `reusable-release-pipeline.yml`.
-
-The caller performs the explicit exact-SHA `Trusted Release Proof` lookup by authoritative workflow-file identity before delegating to the publisher; dynamic `run-name` text is never an authorization identity. The publisher independently requires successful exact-SHA `push` runs for `CI` and `Security`. Release and proof pnpm provisioning both use Corepack so persistent self-hosted runners are idempotent and do not accumulate conflicting global pnpm shims.
+New generated Release callers call `reusable-release.yml` directly. They do not use `reusable-release-pipeline.yml`, do not implement a local API proof gate, and do not implement publication logic.
 
 The generated caller supplies:
 
 ```yaml
 target_sha: ${{ github.sha }}
+proof_workflow_file: .github/workflows/trusted-release-proof.yml
+reuse_proof_payload: true
 ```
 
-The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds the central source archive, SPDX SBOM, metadata, and SHA-256 checksums, then optionally creates a GitHub Artifact Attestation when `attest: true`. It creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set. Consumer payloads must be flat regular files with transport-stable visible names; hidden names such as `.gitignore` fail closed before sealing because GitHub may normalize them during Release upload.
+The central publisher owns proof authorization. It selects the latest successful `workflow_dispatch` of `proof_workflow_file` for the exact target SHA, captures that exact proof run ID, independently rechecks successful exact-SHA `push` runs for `CI` and `Security`, and verifies the target is still current `main`. Dynamic workflow display names are never authorization identities.
 
-GitHub Artifact Attestations are capability-dependent and therefore opt-in in both the direct publisher and retained compatibility pipeline. The default release contract does not require them. When explicitly enabled, attestation failure remains release-fatal. Exact-source proof, SBOM generation, `SHA256SUMS`, draft asset read-back, published asset read-back, and digest verification remain required independently of attestation support.
+Publication is split into resumable jobs:
+
+- **prepare** validates source/evidence/manifest state, captures the exact proof run ID, and recognizes an already-complete published release;
+- **build/seal** downloads the exact proof artifact, verifies `release-payload.json`, imports the proof-produced repository payload, adds source/SBOM evidence, creates `release-metadata.json` and `SHA256SUMS`, and uploads the resulting **sealed payload** as a workflow artifact;
+- **attest** optionally downloads and attests the same sealed payload;
+- **publish** downloads that sealed payload, creates or recovers the immutable tag/draft Release, retains already-correct draft assets, uploads only missing or mismatched assets, verifies the draft, and makes it public.
+
+The canonical path never reruns `release-build.sh` during Release. A compatibility-only `reuse_proof_payload: false` path remains available for historical proof artifacts; in that mode the publisher preserves the established `RELEASE_OUTPUT_DIR` release-build contract.
+
+Successful job boundaries are checkpoints. If attestation or publication fails after build/seal succeeded, operators use GitHub **Re-run failed jobs**; the successful earlier jobs remain complete and downstream jobs reuse their workflow artifacts. A failed publication resumes a compatible draft rather than unconditionally deleting and re-uploading all assets.
+
+GitHub Artifact Attestations are capability-dependent and therefore opt-in in both the direct publisher and retained compatibility pipeline. The default release contract does not require them. When explicitly enabled, attestation failure remains release-fatal. Exact-source proof, proof-produced payload digests, SBOM generation, `SHA256SUMS`, sealed-payload verification, and draft asset read-back remain required independently of attestation support.
+
+The publisher verifies the draft before publication. Independent post-publication checksum/digest verification belongs to `Release Verification`; it is not duplicated in the publisher.
 
 Tag movement is forbidden. An existing tag on another commit fails hard. A verified already-published release is treated idempotently.
 
@@ -176,6 +195,7 @@ It cannot create/move tags, create a missing Release, rebuild/upload/delete/repl
 - Security;
 - Trusted Release Proof;
 - Release;
+- Release Verification;
 - Release Metadata;
 - optionally CodeQL.
 
@@ -189,10 +209,11 @@ The organization auditor requires these workflow families at the requested immut
 - `security.yml` -> `reusable-security-compact.yml`;
 - `trusted-release-proof.yml` -> `reusable-release-proof.yml`;
 - `release.yml` -> `reusable-release.yml`;
+- `release-verification.yml` -> `reusable-release-verification.yml`;
 - `release-metadata.yml` -> `reusable-release-metadata-current.yml`.
 
-It also rejects floating references, retired runner-controller usage, manually copied release target semantics, missing proof gating, and local publication implementation in consumer `release.yml`.
+It also rejects floating references, retired runner-controller usage, manually copied release target semantics, duplicated consumer proof gates, missing central proof delegation, and local publication implementation in consumer `release.yml`.
 
 ## Compatibility policy
 
-Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. New bootstrap output and current organization policy must use the direct-runner architecture.
+Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. Proof-payload reuse defaults off in that compatibility surface so historical proof adapters remain valid. New bootstrap output and current organization policy use the direct proof-once/publish-once architecture.

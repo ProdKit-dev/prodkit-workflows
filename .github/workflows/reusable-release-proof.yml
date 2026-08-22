@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       runner_json:
-        description: JSON value accepted by runs-on, normally from Reusable Runner Policy.
+        description: JSON value accepted by runs-on, normally selected by the caller.
         required: true
         type: string
       main_branch:
@@ -16,7 +16,7 @@ on:
         type: string
         default: main
       proof_script:
-        description: Repository-owned release-proof adapter under .prodkit/workflows.
+        description: Repository-owned release-specific acceptance adapter under .prodkit/workflows.
         required: false
         type: string
         default: .prodkit/workflows/release-proof.sh
@@ -24,8 +24,22 @@ on:
         required: false
         type: number
         default: 90
+      required_workflows_json:
+        description: Successful exact-SHA push workflows required before release-specific proof runs.
+        required: false
+        type: string
+        default: '["CI","Security"]'
+      manifest_path:
+        required: false
+        type: string
+        default: .prodkit/release.json
+      prepare_release_payload:
+        description: Build the repository-owned release payload once during proof for later promotion without rebuilding.
+        required: false
+        type: boolean
+        default: false
       python_enabled:
-        description: Provision uv and the requested baseline Python runtime before the proof adapter.
+        description: Provision uv and the requested baseline Python runtime before the proof adapter/release build.
         required: false
         type: boolean
         default: false
@@ -38,7 +52,7 @@ on:
         type: string
         default: "0.10.0"
       node_enabled:
-        description: Provision Node.js and pinned pnpm through Corepack before the proof adapter.
+        description: Provision Node.js and pinned pnpm through Corepack before the proof adapter/release build.
         required: false
         type: boolean
         default: false
@@ -49,10 +63,11 @@ on:
       pnpm_version:
         required: false
         type: string
-        default: "10.34.5"
+        default: "11.21.0"
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: release-proof-${{ inputs.source_sha }}
@@ -67,10 +82,17 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       MAIN_BRANCH: ${{ inputs.main_branch }}
       PROOF_SCRIPT: ${{ inputs.proof_script }}
+      REQUIRED_WORKFLOWS_JSON: ${{ inputs.required_workflows_json }}
+      MANIFEST_PATH: ${{ inputs.manifest_path }}
       PRODKIT_PROOF_PYTHON_VERSION: ${{ inputs.python_version }}
       PRODKIT_PROOF_NODE_VERSION: ${{ inputs.node_version }}
       PRODKIT_PROOF_PNPM_VERSION: ${{ inputs.pnpm_version }}
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Initialize proof evidence path
+        shell: bash
+        run: echo "PRODKIT_PROOF_OUTPUT_DIR=$RUNNER_TEMP/prodkit-release-proof" >> "$GITHUB_ENV"
+
       - name: Validate release-candidate request
         shell: bash
         run: |
@@ -91,6 +113,32 @@ jobs:
           git fetch origin "$MAIN_BRANCH" --tags --force
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git rev-parse "origin/$MAIN_BRANCH")" = "$SOURCE_SHA"
+
+      - name: Verify permanent exact-SHA gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; sha=os.environ['SOURCE_SHA']; token=os.environ['GH_TOKEN']
+          required=json.loads(os.environ['REQUIRED_WORKFLOWS_JSON'])
+          if not isinstance(required,list) or not required or not all(isinstance(x,str) and x for x in required):
+              raise SystemExit('required_workflows_json must be a non-empty JSON string array')
+          if len(set(required)) != len(required):
+              raise SystemExit('required_workflows_json must not contain duplicate workflow names')
+          params=urllib.parse.urlencode({'head_sha':sha,'event':'push','per_page':100})
+          req=urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/runs?{params}",
+              headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'prodkit-workflows-release-proof'})
+          with urllib.request.urlopen(req,timeout=120) as response:
+              runs=json.load(response).get('workflow_runs',[])
+          missing=[]
+          for name in required:
+              matches=[run for run in runs if run.get('name')==name and run.get('head_sha')==sha and run.get('event')=='push' and run.get('status')=='completed' and run.get('conclusion')=='success']
+              if not matches: missing.append(name)
+              else: print(f"{name}: {max(matches,key=lambda item:int(item['id'])).get('html_url')}")
+          if missing: raise SystemExit('missing successful exact-SHA push workflows: '+', '.join(missing))
+          PY
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         if: inputs.python_enabled
@@ -127,15 +175,104 @@ jobs:
           [[ "$resolved" == "$root/"* ]] || { echo "proof path escapes .prodkit/workflows" >&2; exit 2; }
           test -f "$PROOF_SCRIPT" && test ! -L "$PROOF_SCRIPT"
 
-      - name: Run repository release-proof contract
+      - name: Prepare proof evidence directory
         shell: bash
-        env:
-          PRODKIT_PROOF_OUTPUT_DIR: ${{ runner.temp }}/prodkit-release-proof
         run: |
           set -euo pipefail
           rm -rf "$PRODKIT_PROOF_OUTPUT_DIR"
           mkdir -p "$PRODKIT_PROOF_OUTPUT_DIR"
+
+      - name: Run repository release-specific acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
           bash "$PROOF_SCRIPT"
+
+      - name: Resolve promotable release payload contract
+        id: release
+        if: inputs.prepare_release_payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, tomllib
+          root=pathlib.Path.cwd().resolve()
+          raw=pathlib.Path(os.environ['MANIFEST_PATH'])
+          if raw.is_absolute(): raise SystemExit('manifest path must be repository-relative')
+          mp=(root/raw).resolve()
+          if mp == root or root not in mp.parents or not mp.is_file() or mp.is_symlink():
+              raise SystemExit('invalid release manifest path')
+          data=json.loads(mp.read_text())
+          if not isinstance(data,dict) or data.get('schema_version') != 1:
+              raise SystemExit('release manifest schema_version must be 1')
+          version_block=data.get('version'); sources=version_block.get('sources') if isinstance(version_block,dict) else None
+          if not isinstance(sources,list) or not sources: raise SystemExit('release manifest requires version.sources')
+          def inside(path):
+              p=(root/pathlib.Path(path)).resolve()
+              if p == root or root not in p.parents: raise SystemExit(f'path escapes repository: {path}')
+              return p
+          def dotted(value,selector):
+              for part in selector.split('.'):
+                  if not isinstance(value,dict) or part not in value: raise SystemExit(f'missing version selector: {selector}')
+                  value=value[part]
+              return value
+          versions=[]
+          for src in sources:
+              if not isinstance(src,dict): raise SystemExit('version source must be an object')
+              typ=src.get('type'); path=src.get('path'); selector=src.get('selector')
+              if typ not in {'text','json','toml'} or not isinstance(path,str) or not path: raise SystemExit('invalid version source')
+              p=inside(path)
+              if not p.is_file(): raise SystemExit(f'version source missing: {path}')
+              if typ=='text': value=p.read_text().strip()
+              elif typ=='json': value=dotted(json.loads(p.read_text()), selector or 'version')
+              else: value=dotted(tomllib.loads(p.read_text()), selector or 'project.version')
+              versions.append(str(value))
+          if len(set(versions)) != 1: raise SystemExit(f'version sources disagree: {versions}')
+          build=data.get('build')
+          if not isinstance(build,dict): raise SystemExit('release manifest build must be an object')
+          script=build.get('script')
+          if not isinstance(script,str) or not script: raise SystemExit('release manifest build.script required')
+          sp=inside(script)
+          if not sp.is_file() or sp.is_symlink(): raise SystemExit('invalid release build script')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f'version={versions[0]}\n')
+              out.write(f'build_script={script}\n')
+          PY
+
+      - name: Build promotable release payload once
+        if: inputs.prepare_release_payload
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: v${{ steps.release.outputs.version }}
+          TARGET_SHA: ${{ inputs.source_sha }}
+          RELEASE_OUTPUT_DIR: ${{ runner.temp }}/prodkit-release-proof/release-payload
+          BUILD_SCRIPT: ${{ steps.release.outputs.build_script }}
+          PRODKIT_RELEASE_PYTHON_VERSION: ${{ inputs.python_version }}
+          PRODKIT_RELEASE_NODE_VERSION: ${{ inputs.node_version }}
+          PRODKIT_RELEASE_PNPM_VERSION: ${{ inputs.pnpm_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RELEASE_OUTPUT_DIR"
+          mkdir -p "$RELEASE_OUTPUT_DIR"
+          bash "$BUILD_SCRIPT"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          d=pathlib.Path(os.environ['RELEASE_OUTPUT_DIR']).resolve()
+          entries=sorted(d.iterdir()) if d.is_dir() else []
+          if not entries: raise SystemExit('proof-produced release payload is empty')
+          items=[]
+          for p in entries:
+              if p.name.startswith('.'): raise SystemExit(f'proof payload must not use hidden asset names: {p.name}')
+              if p.is_symlink() or not p.is_file(): raise SystemExit(f'proof payload must be a flat regular file: {p.name}')
+              if p.name in {'SHA256SUMS','release-metadata.json','repository.spdx.json'}:
+                  raise SystemExit(f'proof payload uses central-owned asset name: {p.name}')
+              items.append({'name':p.name,'size':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
+          receipt={'schema_version':1,'repository':os.environ['GITHUB_REPOSITORY'],'source_sha':os.environ['TARGET_SHA'],'version':os.environ['RELEASE_VERSION'],'artifacts':items}
+          out=pathlib.Path(os.environ['PRODKIT_PROOF_OUTPUT_DIR'])/'release-payload.json'
+          out.write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(f'proof-produced promotable payload: {len(items)} file(s)')
+          PY
 
       - name: Assert source remained immutable
         shell: bash
@@ -147,8 +284,6 @@ jobs:
 
       - name: Write canonical proof receipt
         shell: bash
-        env:
-          PRODKIT_PROOF_OUTPUT_DIR: ${{ runner.temp }}/prodkit-release-proof
         run: |
           python3 - <<'PY'
           import json, os, pathlib
@@ -161,6 +296,7 @@ jobs:
               "workflow": os.environ["GITHUB_WORKFLOW"],
               "run_id": int(os.environ["GITHUB_RUN_ID"]),
               "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "contains_release_payload": (out / "release-payload.json").is_file(),
           }
           (out / "release-proof.json").write_text(
               json.dumps(receipt, indent=2, sort_keys=True) + "\n",

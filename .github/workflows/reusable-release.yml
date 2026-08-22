@@ -33,8 +33,18 @@ on:
         required: false
         type: string
         default: '["CI","Security"]'
+      proof_workflow_file:
+        description: Trusted proof workflow path, relative to repository root.
+        required: false
+        type: string
+        default: .github/workflows/trusted-release-proof.yml
+      reuse_proof_payload:
+        description: Reuse the repository-owned payload produced by the exact successful Trusted Release Proof instead of rebuilding it.
+        required: false
+        type: boolean
+        default: false
       python_enabled:
-        description: Provision uv and the requested baseline Python runtime before the release build contract.
+        description: Provision uv and the requested baseline Python runtime when a compatibility release rebuild is required.
         required: false
         type: boolean
         default: false
@@ -47,7 +57,7 @@ on:
         type: string
         default: "0.10.0"
       node_enabled:
-        description: Provision Node.js and pnpm before the release build contract.
+        description: Provision Node.js and pnpm when a compatibility release rebuild is required.
         required: false
         type: boolean
         default: false
@@ -89,13 +99,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Guarded release
+  prepare:
+    name: Validate release request
     runs-on: ${{ fromJSON(inputs.runner_json) }}
-    timeout-minutes: 90
-    environment:
-      name: ${{ inputs.environment }}
-      deployment: false
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      published: ${{ steps.preflight.outputs.published }}
+      notes_path: ${{ steps.manifest.outputs.notes_path }}
+      build_script: ${{ steps.manifest.outputs.build_script }}
+      artifact_dir: ${{ steps.manifest.outputs.artifact_dir }}
+      source_archive: ${{ steps.manifest.outputs.source_archive }}
+      release_name: ${{ steps.manifest.outputs.release_name }}
+      proof_run_id: ${{ steps.evidence.outputs.proof_run_id }}
     env:
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_TAG: v${{ inputs.version }}
@@ -103,8 +121,8 @@ jobs:
       MAIN_BRANCH: ${{ inputs.main_branch }}
       MANIFEST_PATH: ${{ inputs.manifest_path }}
       REQUIRED_WORKFLOWS_JSON: ${{ inputs.required_workflows_json }}
+      PROOF_WORKFLOW_FILE: ${{ inputs.proof_workflow_file }}
       GH_TOKEN: ${{ github.token }}
-      PRERELEASE: ${{ inputs.prerelease }}
     steps:
       - name: Validate request shape
         shell: bash
@@ -113,6 +131,7 @@ jobs:
           [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
           [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "${GITHUB_REF}" = "refs/heads/${MAIN_BRANCH}"
+          [[ "$PROOF_WORKFLOW_FILE" =~ ^(\.github/workflows/)?[A-Za-z0-9._-]+\.ya?ml$ ]] || { echo "invalid proof workflow path: $PROOF_WORKFLOW_FILE" >&2; exit 2; }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,6 +140,7 @@ jobs:
           ref: ${{ inputs.target_sha }}
 
       - name: Verify immutable source and permanent evidence
+        id: evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -128,23 +148,33 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git rev-parse "origin/$MAIN_BRANCH")" = "$TARGET_SHA"
           python3 - <<'PY'
-          import json, os, urllib.request
+          import json, os, urllib.parse, urllib.request
           repo=os.environ['GITHUB_REPOSITORY']; sha=os.environ['TARGET_SHA']; token=os.environ['GH_TOKEN']
           required=json.loads(os.environ['REQUIRED_WORKFLOWS_JSON'])
+          proof_file=os.environ['PROOF_WORKFLOW_FILE']
+          if '/' not in proof_file:
+              proof_file=f'.github/workflows/{proof_file}'
           if not isinstance(required,list) or not required or not all(isinstance(x,str) and x for x in required):
               raise SystemExit('required_workflows_json must be a non-empty JSON string array')
           if len(set(required)) != len(required):
               raise SystemExit('required_workflows_json must not contain duplicate workflow names')
-          req=urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
-              headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'prodkit-workflows-release'})
-          with urllib.request.urlopen(req) as r: runs=json.load(r)['workflow_runs']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'prodkit-workflows-release'}
+          params=urllib.parse.urlencode({'head_sha':sha,'per_page':100})
+          req=urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/runs?{params}",headers=headers)
+          with urllib.request.urlopen(req,timeout=120) as r: runs=json.load(r)['workflow_runs']
           missing=[]
           for name in required:
               matches=[x for x in runs if x.get('name')==name and x.get('event')=='push' and x.get('status')=='completed' and x.get('conclusion')=='success' and x.get('head_sha')==sha]
               if not matches: missing.append(name)
-              else: print(f"{name}: {matches[0].get('html_url')}")
+              else: print(f"{name}: {max(matches,key=lambda item:int(item['id'])).get('html_url')}")
           if missing: raise SystemExit('missing successful exact-SHA push workflows: '+', '.join(missing))
+          proofs=[x for x in runs if x.get('path')==proof_file and x.get('event')=='workflow_dispatch' and x.get('status')=='completed' and x.get('conclusion')=='success' and x.get('head_sha')==sha]
+          if not proofs:
+              raise SystemExit(f'missing successful exact-SHA workflow_dispatch proof: {proof_file}')
+          proof=max(proofs,key=lambda item:int(item['id']))
+          print(f"Trusted Release Proof: {proof.get('html_url')}")
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f"proof_run_id={int(proof['id'])}\n")
           PY
 
       - name: Validate release manifest and metadata
@@ -249,8 +279,6 @@ jobs:
 
       - name: Preflight existing release
         id: preflight
-        env:
-          NOTES_PATH: ${{ steps.manifest.outputs.notes_path }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -262,7 +290,7 @@ jobs:
               if accept: h['Accept']=accept
               req=urllib.request.Request(url,headers=h)
               try:
-                  with urllib.request.urlopen(req) as r: return r.read(), r.status
+                  with urllib.request.urlopen(req,timeout=120) as r: return r.read(), r.status
               except urllib.error.HTTPError as e:
                   if e.code==404: return None,404
                   raise
@@ -292,34 +320,103 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write(f'published={str(published).lower()}\n')
           PY
 
+  build:
+    name: Build and seal release payload
+    needs: prepare
+    if: ${{ needs.prepare.outputs.published != 'true' }}
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_TAG: v${{ inputs.version }}
+      TARGET_SHA: ${{ inputs.target_sha }}
+      ARTIFACT_DIR: ${{ needs.prepare.outputs.artifact_dir }}
+      RELEASE_OUTPUT_DIR: ${{ needs.prepare.outputs.artifact_dir }}
+      BUILD_SCRIPT: ${{ needs.prepare.outputs.build_script }}
+      SOURCE_ARCHIVE: ${{ needs.prepare.outputs.source_archive }}
+      PRODKIT_RELEASE_PYTHON_VERSION: ${{ inputs.python_version }}
+      PRODKIT_RELEASE_NODE_VERSION: ${{ inputs.node_version }}
+      PRODKIT_RELEASE_PNPM_VERSION: ${{ inputs.pnpm_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.target_sha }}
+
+      - name: Assert exact build source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
       - name: Prepare artifact directory
-        if: steps.preflight.outputs.published != 'true'
-        env:
-          ARTIFACT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "$ARTIFACT_DIR"
           mkdir -p "$ARTIFACT_DIR"
 
+      - name: Download proof-produced release payload
+        if: inputs.reuse_proof_payload
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: trusted-release-proof-${{ inputs.target_sha }}
+          path: ${{ runner.temp }}/trusted-release-proof
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.proof_run_id }}
+
+      - name: Verify and import proof-produced release payload
+        if: inputs.reuse_proof_payload
+        env:
+          PROOF_ARTIFACT_DIR: ${{ runner.temp }}/trusted-release-proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil
+          proof=pathlib.Path(os.environ['PROOF_ARTIFACT_DIR'])
+          receipt_path=proof/'release-payload.json'; payload=proof/'release-payload'
+          if not receipt_path.is_file() or not payload.is_dir():
+              raise SystemExit('Trusted Release Proof did not contain a promotable release payload')
+          receipt=json.loads(receipt_path.read_text())
+          if receipt.get('schema_version') != 1: raise SystemExit('unsupported proof payload receipt schema')
+          if receipt.get('repository') != os.environ['GITHUB_REPOSITORY']: raise SystemExit('proof payload repository mismatch')
+          if receipt.get('source_sha') != os.environ['TARGET_SHA']: raise SystemExit('proof payload source mismatch')
+          if receipt.get('version') != os.environ['RELEASE_VERSION']: raise SystemExit('proof payload version mismatch')
+          declared=receipt.get('artifacts')
+          if not isinstance(declared,list) or not declared: raise SystemExit('proof payload receipt has no artifacts')
+          expected={item.get('name'):(item.get('size'),item.get('sha256')) for item in declared if isinstance(item,dict)}
+          files={p.name:p for p in payload.iterdir() if p.is_file() and not p.is_symlink()}
+          if set(files)!=set(expected): raise SystemExit(f'proof payload set mismatch: actual={sorted(files)} expected={sorted(expected)}')
+          for name,p in files.items():
+              size,digest=expected[name]
+              if p.stat().st_size != size or hashlib.sha256(p.read_bytes()).hexdigest()!=digest:
+                  raise SystemExit(f'proof payload digest mismatch: {name}')
+          out=pathlib.Path(os.environ['ARTIFACT_DIR'])
+          for p in files.values(): shutil.copy2(p,out/p.name)
+          print(f'imported {len(files)} proof-certified release payload file(s)')
+          PY
+
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        if: steps.preflight.outputs.published != 'true' && inputs.python_enabled
+        if: inputs.python_enabled && !inputs.reuse_proof_payload
         with:
           version: ${{ inputs.uv_version }}
           enable-cache: true
 
       - name: Provision release Python runtime
-        if: steps.preflight.outputs.published != 'true' && inputs.python_enabled
+        if: inputs.python_enabled && !inputs.reuse_proof_payload
         shell: bash
         run: uv python install "${{ inputs.python_version }}"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.preflight.outputs.published != 'true' && inputs.node_enabled
+        if: inputs.node_enabled && !inputs.reuse_proof_payload
         with:
           node-version: ${{ inputs.node_version }}
 
       - name: Provision release pnpm
-        if: steps.preflight.outputs.published != 'true' && inputs.node_enabled
+        if: inputs.node_enabled && !inputs.reuse_proof_payload
         shell: bash
         run: |
           set -euo pipefail
@@ -327,23 +424,14 @@ jobs:
           corepack prepare "pnpm@${{ inputs.pnpm_version }}" --activate
           test "$(pnpm --version)" = "${{ inputs.pnpm_version }}"
 
-      - name: Run release build contract
-        if: steps.preflight.outputs.published != 'true'
-        env:
-          BUILD_SCRIPT: ${{ steps.manifest.outputs.build_script }}
-          RELEASE_OUTPUT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
-          PRODKIT_RELEASE_PYTHON_VERSION: ${{ inputs.python_version }}
-          PRODKIT_RELEASE_NODE_VERSION: ${{ inputs.node_version }}
-          PRODKIT_RELEASE_PNPM_VERSION: ${{ inputs.pnpm_version }}
+      - name: Run compatibility release build contract
+        if: ${{ !inputs.reuse_proof_payload }}
         shell: bash
         run: |
           set -euo pipefail
           bash "$BUILD_SCRIPT"
 
       - name: Validate consumer release payload contract
-        if: steps.preflight.outputs.published != 'true'
-        env:
-          ARTIFACT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
         shell: bash
         run: |
           set -euo pipefail
@@ -353,26 +441,18 @@ jobs:
           if d == root or root not in d.parents: raise SystemExit('artifact dir escapes repository')
           if not d.is_dir(): raise SystemExit('release artifact directory missing')
           repo=os.environ['GITHUB_REPOSITORY'].split('/',1)[-1]
-          reserved={
-              'SHA256SUMS',
-              'release-metadata.json',
-              'repository.spdx.json',
-              f"{repo}-{os.environ['RELEASE_TAG']}.tar.gz",
-          }
+          reserved={'SHA256SUMS','release-metadata.json','repository.spdx.json',f"{repo}-{os.environ['RELEASE_TAG']}.tar.gz"}
           entries=list(d.iterdir())
           if not entries: raise SystemExit('consumer release payload set is empty')
           for p in entries:
               if p.name in reserved: raise SystemExit(f'consumer emitted central-owned artifact: {p.name}')
-              if p.name.startswith('.'):
-                  raise SystemExit(f'consumer release payload must not use hidden asset names: {p.name}')
+              if p.name.startswith('.'): raise SystemExit(f'consumer release payload must not use hidden asset names: {p.name}')
               if p.is_symlink() or not p.is_file(): raise SystemExit(f'consumer release payload must be a flat regular file: {p.name}')
           print(f'consumer release payload contract satisfied: {len(entries)} file(s)')
           PY
 
       - name: Add exact source archive
-        if: steps.preflight.outputs.published != 'true' && steps.manifest.outputs.source_archive == 'true'
-        env:
-          ARTIFACT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
+        if: needs.prepare.outputs.source_archive == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -380,9 +460,8 @@ jobs:
           git archive --format=tar.gz --prefix="${repo}-${RELEASE_TAG}/" -o "${ARTIFACT_DIR}/${repo}-${RELEASE_TAG}.tar.gz" "$TARGET_SHA"
 
       - name: Generate release SPDX SBOM
-        if: steps.preflight.outputs.published != 'true' && inputs.generate_sbom
+        if: inputs.generate_sbom
         env:
-          ARTIFACT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
           SYFT_IMAGE: ${{ inputs.syft_image }}
         shell: bash
         run: |
@@ -391,9 +470,6 @@ jobs:
           test -s "$ARTIFACT_DIR/repository.spdx.json"
 
       - name: Seal artifact set
-        if: steps.preflight.outputs.published != 'true'
-        env:
-          ARTIFACT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
         shell: bash
         run: |
           set -euo pipefail
@@ -415,27 +491,87 @@ jobs:
           PY
           (cd "$ARTIFACT_DIR" && sha256sum -c SHA256SUMS)
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: steps.preflight.outputs.published != 'true'
+      - name: Upload sealed release payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ inputs.version }}-${{ inputs.target_sha }}
-          path: ${{ steps.manifest.outputs.artifact_dir }}/*
+          path: ${{ needs.prepare.outputs.artifact_dir }}/*
           if-no-files-found: error
           retention-days: 90
+          overwrite: true
+
+  attest:
+    name: Attest sealed release payload
+    needs: [prepare, build]
+    if: ${{ needs.prepare.outputs.published != 'true' && inputs.attest }}
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download sealed release payload
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-${{ inputs.version }}-${{ inputs.target_sha }}
+          path: ${{ needs.prepare.outputs.artifact_dir }}
+
+      - name: Verify sealed payload before attestation
+        shell: bash
+        run: (cd "${{ needs.prepare.outputs.artifact_dir }}" && sha256sum -c SHA256SUMS)
 
       - name: Attest release artifact checksums
-        if: steps.preflight.outputs.published != 'true' && inputs.attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-checksums: ${{ steps.manifest.outputs.artifact_dir }}/SHA256SUMS
+          subject-checksums: ${{ needs.prepare.outputs.artifact_dir }}/SHA256SUMS
           subject-version: ${{ inputs.version }}
 
-      - name: Create immutable tag, draft release, upload, verify, publish
-        if: steps.preflight.outputs.published != 'true'
-        env:
-          ARTIFACT_DIR: ${{ steps.manifest.outputs.artifact_dir }}
-          NOTES_PATH: ${{ steps.manifest.outputs.notes_path }}
-          RELEASE_NAME: ${{ steps.manifest.outputs.release_name }}
+  publish:
+    name: Publish sealed release payload
+    needs: [prepare, build, attest]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.published != 'true' && needs.build.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_TAG: v${{ inputs.version }}
+      TARGET_SHA: ${{ inputs.target_sha }}
+      PRERELEASE: ${{ inputs.prerelease }}
+      ARTIFACT_DIR: ${{ needs.prepare.outputs.artifact_dir }}
+      NOTES_PATH: ${{ needs.prepare.outputs.notes_path }}
+      RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.target_sha }}
+
+      - name: Assert exact publication source
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
+      - name: Download sealed release payload
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-${{ inputs.version }}-${{ inputs.target_sha }}
+          path: ${{ needs.prepare.outputs.artifact_dir }}
+
+      - name: Verify sealed payload
+        shell: bash
+        run: (cd "$ARTIFACT_DIR" && sha256sum -c SHA256SUMS)
+
+      - name: Create or resume immutable publication
         shell: bash
         run: |
           python3 - <<'PY'
@@ -447,11 +583,18 @@ jobs:
               h=dict(H); h.update(headers or {})
               req=urllib.request.Request(url,data=data,headers=h,method=method)
               try:
-                  with urllib.request.urlopen(req) as r: return r.read(),r.status
+                  with urllib.request.urlopen(req,timeout=120) as r: return r.read(),r.status
               except urllib.error.HTTPError as e:
                   if e.code==404: return None,404
                   print(e.read().decode(errors='replace'))
                   raise
+          def asset_matches(asset,digest):
+              api_digest=asset.get('digest')
+              if api_digest:
+                  return api_digest == f'sha256:{digest}'
+              raw,_=request('GET',asset['url'],headers={'Accept':'application/octet-stream'})
+              return hashlib.sha256(raw).hexdigest()==digest
+
           enc=urllib.parse.quote(tag,safe='')
           raw,st=request('GET',f'https://api.github.com/repos/{repo}/git/ref/tags/{enc}')
           if st==404:
@@ -460,64 +603,55 @@ jobs:
               if json.loads(raw)['object']['sha'] != sha: raise SystemExit('created tag resolved incorrectly')
           elif json.loads(raw)['object']['sha'] != sha:
               raise SystemExit('refusing to move immutable tag')
-          # The release-by-tag endpoint does not surface drafts. Enumerate releases
-          # to recover a prior workflow-owned draft deterministically after a failed run.
-          matches=[]
-          page=1
+
+          matches=[]; page=1
           while True:
               raw,_=request('GET',f'https://api.github.com/repos/{repo}/releases?per_page=100&page={page}')
-              batch=json.loads(raw)
-              matches.extend(r for r in batch if r.get('tag_name')==tag)
+              batch=json.loads(raw); matches.extend(r for r in batch if r.get('tag_name')==tag)
               if len(batch)<100: break
               page+=1
-          if len(matches)>1:
-              raise SystemExit(f'multiple releases exist for {tag}; manual reconciliation required')
+          if len(matches)>1: raise SystemExit(f'multiple releases exist for {tag}; manual reconciliation required')
+
+          expected={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(d.iterdir()) if p.is_file() and not p.is_symlink()}
           if not matches:
               payload=json.dumps({'tag_name':tag,'target_commitish':sha,'name':os.environ['RELEASE_NAME'],'body':notes,'draft':True,'prerelease':prerelease}).encode()
               raw,_=request('POST',f'https://api.github.com/repos/{repo}/releases',payload,{'Content-Type':'application/json'})
               rel=json.loads(raw)
           else:
               rel=matches[0]
-              if not rel.get('draft'): raise SystemExit('published release appeared during transaction; rerun for verification')
-              # A draft is workflow-owned recovery state. Replace all draft assets deterministically.
-              for a in rel.get('assets',[]): request('DELETE',a['url'])
+              if not rel.get('draft'):
+                  assets={a['name']:a for a in rel.get('assets',[])}
+                  if set(assets)!=set(expected): raise SystemExit('published release asset set differs from sealed payload')
+                  for name,digest in expected.items():
+                      if not asset_matches(assets[name],digest): raise SystemExit(f'published release asset mismatch: {name}')
+                  print(f'Existing published release {tag} matches sealed payload; publication already complete.')
+                  raise SystemExit(0)
               payload=json.dumps({'name':os.environ['RELEASE_NAME'],'body':notes,'draft':True,'prerelease':prerelease}).encode()
               raw,_=request('PATCH',f'https://api.github.com/repos/{repo}/releases/{rel["id"]}',payload,{'Content-Type':'application/json'})
               rel=json.loads(raw)
+
           release_id=rel['id']
-          expected={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(d.iterdir()) if p.is_file() and not p.is_symlink()}
-          for name in sorted(expected):
+          remote={a['name']:a for a in rel.get('assets',[])}
+          for name,asset in list(remote.items()):
+              digest=expected.get(name)
+              if digest is None or not asset_matches(asset,digest):
+                  request('DELETE',asset['url'])
+                  remote.pop(name,None)
+          for name,digest in expected.items():
+              if name in remote: continue
               p=d/name; q=urllib.parse.urlencode({'name':name})
               ctype=mimetypes.guess_type(name)[0] or 'application/octet-stream'
               request('POST',f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?{q}',p.read_bytes(),{'Content-Type':ctype})
+
           raw,_=request('GET',f'https://api.github.com/repos/{repo}/releases/{release_id}')
           rel=json.loads(raw); assets={a['name']:a for a in rel.get('assets',[])}
           if set(assets)!=set(expected): raise SystemExit(f'draft asset set mismatch: remote={sorted(assets)} expected={sorted(expected)}')
           for name,digest in expected.items():
-              raw,_=request('GET',assets[name]['url'],headers={'Accept':'application/octet-stream'})
-              if hashlib.sha256(raw).hexdigest()!=digest: raise SystemExit(f'draft asset checksum mismatch: {name}')
-              api_digest=assets[name].get('digest')
-              if api_digest and api_digest != f'sha256:{digest}': raise SystemExit(f'GitHub draft asset digest mismatch: {name}')
+              if not asset_matches(assets[name],digest): raise SystemExit(f'draft asset checksum mismatch: {name}')
+
           payload=json.dumps({'draft':False,'prerelease':prerelease}).encode()
           raw,_=request('PATCH',f'https://api.github.com/repos/{repo}/releases/{release_id}',payload,{'Content-Type':'application/json'})
           rel=json.loads(raw)
           if rel.get('draft'): raise SystemExit('release remained draft')
           print(f"Published {rel['html_url']}")
-          # Post-publication verification uses the published checksum file as the authority.
-          raw,_=request('GET',f'https://api.github.com/repos/{repo}/releases/{release_id}')
-          assets={a['name']:a for a in json.loads(raw).get('assets',[])}
-          if 'SHA256SUMS' not in assets: raise SystemExit('published release lacks SHA256SUMS')
-          sums_raw,_=request('GET',assets['SHA256SUMS']['url'],headers={'Accept':'application/octet-stream'})
-          expected_sums={}
-          for line in sums_raw.decode().splitlines():
-              digest,name=line.split(None,1); expected_sums[name.lstrip('*')]=digest
-          expected_assets=set(expected_sums)|{'SHA256SUMS'}
-          if set(assets) != expected_assets:
-              raise SystemExit(f'published asset set mismatch: remote={sorted(assets)} expected={sorted(expected_assets)}')
-          for name,digest in expected_sums.items():
-              raw,_=request('GET',assets[name]['url'],headers={'Accept':'application/octet-stream'})
-              if hashlib.sha256(raw).hexdigest()!=digest: raise SystemExit(f'published asset checksum mismatch: {name}')
-              api_digest=assets[name].get('digest')
-              if api_digest and api_digest != f'sha256:{digest}': raise SystemExit(f'GitHub published asset digest mismatch: {name}')
-          print(f'Verified {len(expected_sums)} published payload assets against SHA256SUMS')
           PY
