@@ -187,10 +187,10 @@ def test_bootstrap() -> None:
             raise SystemExit("bootstrap Release caller must use the guarded publisher directly")
         if "target_sha: ${{ github.sha }}" not in release:
             raise SystemExit("bootstrap Release caller must publish dispatched current main")
-        if "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml" not in release:
-            raise SystemExit("bootstrap Release caller must gate on Trusted Release Proof by workflow file")
-        if 'run.get("path") == workflow_file' not in release:
-            raise SystemExit("bootstrap Release proof lookup must use workflow file identity")
+        if "proof_workflow_file: .github/workflows/trusted-release-proof.yml" not in release:
+            raise SystemExit("bootstrap Release caller must delegate Trusted Release Proof authorization centrally")
+        if "proof-gate:" in release or "urllib.request" in release:
+            raise SystemExit("bootstrap Release caller must not duplicate the central proof gate")
         if "reusable-release-metadata-current.yml@" not in metadata:
             raise SystemExit("bootstrap metadata caller must use current release metadata workflow")
 
@@ -334,26 +334,31 @@ def main() -> None:
             "consumer release payload must not use hidden asset names",
             "corepack prepare",
             "test \"$(pnpm --version)\"",
+            "proof_workflow_file:",
+            "Build and seal release payload",
+            "Publish sealed release payload",
+            "actions/download-artifact@",
         ),
         name="Reusable Release",
     )
     if 'npm install --global "pnpm@' in release:
         raise SystemExit("Reusable Release must not use global npm pnpm installation on persistent runners")
 
-    # Compatibility-only wrapper for already-pinned consumers.
+    # Compatibility-only wrapper for already-pinned consumers. It must delegate
+    # proof authorization and publication instead of retaining a second gate.
     release_pipeline = (ROOT / ".github/workflows/reusable-release-pipeline.yml").read_text()
     require(
         release_pipeline,
         (
-            "Verify release-candidate proof",
-            '"event": "workflow_dispatch"',
-            "missing successful workflow_dispatch",
             "uses: ./.github/workflows/reusable-release.yml",
+            "proof_workflow_file: ${{ inputs.proof_workflow_file }}",
             "required_push_workflows_json:",
             "required_workflows_json: ${{ inputs.required_push_workflows_json }}",
         ),
         name="Backward-compatible Reusable Release Pipeline",
     )
+    if "proof-gate:" in release_pipeline or "urllib.request" in release_pipeline:
+        raise SystemExit("compatibility Release Pipeline must not duplicate central proof authorization")
 
     codeql = (ROOT / ".github/workflows/reusable-codeql.yml").read_text()
     require(
@@ -399,7 +404,8 @@ def main() -> None:
             '"release.yml": "reusable-release.yml"',
             "retired runner-controller orchestration",
             'target_sha: ${{ github.sha }}',
-            "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml",
+            "proof_workflow_file: .github/workflows/trusted-release-proof.yml",
+            "must not duplicate central proof-gate implementation",
         ),
         name="Organization Audit",
     )
@@ -417,6 +423,7 @@ def main() -> None:
             "workflow_dispatch",
             "does not run on every pull-request commit",
             "Quality is a release-presentation reference",
+            "Re-run failed jobs",
         ),
         name="LIFECYCLE.md",
     )
