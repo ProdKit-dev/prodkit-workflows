@@ -28,6 +28,7 @@ Normative reusable workloads:
 - `reusable-codeql.yml`;
 - `reusable-release-proof.yml`;
 - `reusable-release.yml`;
+- `reusable-release-verification.yml`;
 - `reusable-release-metadata-current.yml`;
 - `reusable-release-metadata.yml`;
 - `reusable-org-audit.yml`.
@@ -64,8 +65,8 @@ A workload gets one runner target. Product/security/release failures never cause
 
 1. **Pull request** — CI, Security, optional CodeQL.
 2. **Main** — exact-main CI and Security certify the merge SHA.
-3. **Release candidate** — explicitly dispatch `Trusted Release Proof` on the intended current `main`; it certifies `${{ github.sha }}`.
-4. **Publication** — proof promotion dispatches `Release` on the same current `main`; the central publisher verifies prior exact-SHA evidence and publishes `${{ github.sha }}`.
+3. **Release candidate** — dispatch `Trusted Release Proof`; it verifies those permanent gates, runs only release-specific acceptance, and produces the promotable repository payload once.
+4. **Publication** — proof promotion dispatches `Release`; Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.
 5. **Verification** — `Release Verification` independently checks the immutable published transaction.
 6. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
 
@@ -122,15 +123,19 @@ CodeQL is opt-in. Generated CodeQL callers do not execute fork PRs on persistent
 
 ## Trusted Release Proof
 
-`reusable-release-proof.yml` accepts an exact `source_sha`, verifies it remains current configured `main`, checks out that exact source, provisions the requested baseline toolchains, validates the repository proof adapter, runs it, confirms tracked source remained immutable, and uploads a canonical proof receipt/evidence artifact.
+`reusable-release-proof.yml` accepts an exact `source_sha`, verifies it remains current configured `main`, and verifies successful permanent exact-SHA `CI` and `Security` push runs before doing release-specific work. It does not rerun those permanent matrices.
+
+The repository `.prodkit/workflows/release-proof.sh` adapter is reserved for acceptance that is genuinely release-specific. For canonical new consumers, the reusable proof then executes `.prodkit/workflows/release-build.sh` once using the configured baseline toolchains, writes the repository-owned files beneath `release-payload/`, records each file's size and SHA-256 in `release-payload.json`, confirms tracked source remained immutable, and uploads the proof artifact.
 
 The generated caller supplies:
 
 ```yaml
 source_sha: ${{ github.sha }}
+required_workflows_json: '["CI","Security"]'
+prepare_release_payload: true
 ```
 
-The proof caller is `workflow_dispatch` only. A proof on another SHA/event does not satisfy publication.
+A proof on another SHA/event does not satisfy publication. The proof-produced payload receipt is bound to repository, exact source SHA, and version.
 
 ## Publication
 
@@ -141,20 +146,23 @@ The generated caller supplies:
 ```yaml
 target_sha: ${{ github.sha }}
 proof_workflow_file: .github/workflows/trusted-release-proof.yml
+reuse_proof_payload: true
 ```
 
-The central publisher owns proof authorization. It verifies that `proof_workflow_file` has a successful `workflow_dispatch` run for the exact target SHA, independently requires successful exact-SHA `push` runs for `CI` and `Security`, and verifies the target is still current `main`. Dynamic workflow display names are never authorization identities.
+The central publisher owns proof authorization. It selects the latest successful `workflow_dispatch` of `proof_workflow_file` for the exact target SHA, captures that exact proof run ID, independently rechecks successful exact-SHA `push` runs for `CI` and `Security`, and verifies the target is still current `main`. Dynamic workflow display names are never authorization identities.
 
 Publication is split into resumable jobs:
 
-- **prepare** validates source/evidence/manifest state and recognizes an already-complete published release;
-- **build** runs the repository build adapter, validates the consumer payload, adds source/SBOM evidence, creates `release-metadata.json` and `SHA256SUMS`, and uploads the resulting **sealed payload** as a workflow artifact;
+- **prepare** validates source/evidence/manifest state, captures the exact proof run ID, and recognizes an already-complete published release;
+- **build/seal** downloads the exact proof artifact, verifies `release-payload.json`, imports the proof-produced repository payload, adds source/SBOM evidence, creates `release-metadata.json` and `SHA256SUMS`, and uploads the resulting **sealed payload** as a workflow artifact;
 - **attest** optionally downloads and attests the same sealed payload;
 - **publish** downloads that sealed payload, creates or recovers the immutable tag/draft Release, retains already-correct draft assets, uploads only missing or mismatched assets, verifies the draft, and makes it public.
 
-Successful job boundaries are checkpoints. If attestation or publication fails after the build succeeded, operators use GitHub **Re-run failed jobs**; the successful build job is not repeated and downstream jobs reuse its sealed workflow artifact. A failed publication resumes a compatible draft rather than unconditionally deleting and re-uploading all assets.
+The canonical path never reruns `release-build.sh` during Release. A compatibility-only `reuse_proof_payload: false` path remains available for historical proof artifacts; in that mode the publisher preserves the established `RELEASE_OUTPUT_DIR` release-build contract.
 
-GitHub Artifact Attestations are capability-dependent and therefore opt-in in both the direct publisher and retained compatibility pipeline. The default release contract does not require them. When explicitly enabled, attestation failure remains release-fatal. Exact-source proof, SBOM generation, `SHA256SUMS`, sealed-payload verification, and draft asset read-back remain required independently of attestation support.
+Successful job boundaries are checkpoints. If attestation or publication fails after build/seal succeeded, operators use GitHub **Re-run failed jobs**; the successful earlier jobs remain complete and downstream jobs reuse their workflow artifacts. A failed publication resumes a compatible draft rather than unconditionally deleting and re-uploading all assets.
+
+GitHub Artifact Attestations are capability-dependent and therefore opt-in in both the direct publisher and retained compatibility pipeline. The default release contract does not require them. When explicitly enabled, attestation failure remains release-fatal. Exact-source proof, proof-produced payload digests, SBOM generation, `SHA256SUMS`, sealed-payload verification, and draft asset read-back remain required independently of attestation support.
 
 The publisher verifies the draft before publication. Independent post-publication checksum/digest verification belongs to `Release Verification`; it is not duplicated in the publisher.
 
@@ -208,4 +216,4 @@ It also rejects floating references, retired runner-controller usage, manually c
 
 ## Compatibility policy
 
-Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. New bootstrap output and current organization policy use the direct-runner architecture.
+Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. Proof-payload reuse defaults off in that compatibility surface so historical proof adapters remain valid. New bootstrap output and current organization policy use the direct proof-once/publish-once architecture.
