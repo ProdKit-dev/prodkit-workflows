@@ -34,6 +34,24 @@ def file_text(repo, path, token):
     return base64.b64decode(obj["content"]).decode()
 
 
+def workflow_events(text):
+    lines = text.splitlines()
+    try:
+        start = lines.index("on:")
+    except ValueError:
+        return set()
+    events = set()
+    for line in lines[start + 1 :]:
+        if not line.strip():
+            continue
+        if not line.startswith(" "):
+            break
+        match = re.match(r"^  ([A-Za-z0-9_-]+):(?:\s|$)", line)
+        if match:
+            events.add(match.group(1))
+    return events
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--org", required=True)
@@ -133,11 +151,10 @@ def main():
                     errors.append(
                         "branch-cleanup.yml must remain explicit, SHA-bound, GitHub-hosted cleanup"
                     )
-                for forbidden in ("issue_comment:", "push:", "schedule:"):
-                    if forbidden in text:
-                        errors.append(
-                            "branch-cleanup.yml must not expose automatic or comment-driven mutation triggers"
-                        )
+                if workflow_events(text) != {"workflow_dispatch"}:
+                    errors.append(
+                        "branch-cleanup.yml must expose workflow_dispatch as its only trigger"
+                    )
 
             if filename == "trusted-release-proof.yml":
                 if "workflow_dispatch:" not in text:
