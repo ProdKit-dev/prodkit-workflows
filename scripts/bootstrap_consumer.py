@@ -30,6 +30,8 @@ def main() -> None:
         src / "caller/security.yml": dest / ".github/workflows/security.yml",
         src / "caller/trusted-release-proof.yml": dest
         / ".github/workflows/trusted-release-proof.yml",
+        src / "caller/release-promotion.yml": dest
+        / ".github/workflows/release-promotion.yml",
         src / "caller/release.yml": dest / ".github/workflows/release.yml",
         src / "caller/release-verification.yml": dest
         / ".github/workflows/release-verification.yml",
