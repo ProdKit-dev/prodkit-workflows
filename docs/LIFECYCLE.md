@@ -10,7 +10,7 @@
 | Main branch | `push` to `main` | Certify the actual merge SHA | successful exact-SHA `CI` and `Security` |
 | Release candidate | explicit `workflow_dispatch` | Release-grade exact-source acceptance | `Trusted Release Proof` |
 | Promotion | successful proof dependency | Dispatch the proven version without waiting for publication | bounded idempotent Release dispatch |
-| Publication | promoted `workflow_dispatch` | Verify evidence, build, attest, tag, publish | immutable tag + Release + checksums/SBOM/provenance |
+| Publication | promoted `workflow_dispatch` | Verify evidence, build, optionally attest, tag, publish | immutable tag + Release + checksums/SBOM; optional GitHub provenance |
 | Verification | `workflow_run` after Release | Independently verify immutable publication | exact tag/source/metadata/assets/checksums |
 | Metadata repair | canonical metadata push or explicit dispatch | Repair mutable Release presentation only | verified name/body repair with immutable state unchanged |
 
@@ -62,7 +62,9 @@ Proof does not run on every pull-request commit, ordinary main push, or tag even
 
 Before publication the caller requires a successful dispatch of `Trusted Release Proof` for that exact SHA, identified by authoritative workflow file path rather than mutable display name. The guarded reusable publisher independently requires successful `push` runs of `CI` and `Security` for the same exact SHA.
 
-The reusable publisher then validates release metadata, executes the repository release-build adapter, adds central source/SBOM/checksum/provenance evidence, creates or verifies the immutable tag, performs draft-first publication, reads assets back, and verifies the published checksum set.
+The reusable publisher then validates release metadata, executes the repository release-build adapter, adds central source/SBOM/checksum evidence, optionally creates a GitHub Artifact Attestation, creates or verifies the immutable tag, performs draft-first publication, reads assets back, and verifies the published checksum set.
+
+GitHub Artifact Attestations are optional because feature availability depends on repository visibility and GitHub organization plan. The reusable publisher defaults `attest` to `false`. A consumer may explicitly set `attest: true` only when the feature is available; once explicitly enabled, attestation failure is release-fatal. Exact-source gates, SBOM generation, `SHA256SUMS`, asset read-back, and digest verification remain independent of GitHub Artifact Attestations.
 
 Tag creation never reruns the proof and a product/release failure never switches runners.
 
