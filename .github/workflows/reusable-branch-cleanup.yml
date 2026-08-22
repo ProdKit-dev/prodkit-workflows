@@ -143,12 +143,23 @@ jobs:
           _, repository = call("GET", "")
           default_branch = repository["default_branch"]
           default_ref = read_ref_path(default_branch)
-          _, default_obj = call("GET", default_ref)
-          current_default_sha = default_obj["object"]["sha"]
-          if current_default_sha != expected_default_sha:
-              raise SystemExit(
-                  f"default branch moved: expected {expected_default_sha}, current {current_default_sha}"
-              )
+
+          def assert_default_unchanged(stage: str) -> None:
+              _, current_repository = call("GET", "")
+              if current_repository.get("default_branch") != default_branch:
+                  raise SystemExit(
+                      f"default branch name changed during {stage}: expected {default_branch}, "
+                      f"current {current_repository.get('default_branch')}"
+                  )
+              _, default_obj = call("GET", default_ref)
+              current_sha = default_obj["object"]["sha"]
+              if current_sha != expected_default_sha:
+                  raise SystemExit(
+                      f"default branch moved during {stage}: expected {expected_default_sha}, current {current_sha}"
+                  )
+
+          assert_default_unchanged("initial validation")
+          current_default_sha = expected_default_sha
 
           evidence = {
               "repository": repo,
@@ -160,6 +171,7 @@ jobs:
               "results": [],
           }
           present = []
+          validated_sha = {}
           safety_failures = []
 
           for branch in branches:
@@ -176,12 +188,17 @@ jobs:
               if info.get("protected"):
                   safety_failures.append((branch, "branch is protected by repository policy"))
                   continue
+              target_sha = (info.get("commit") or {}).get("sha")
+              if not isinstance(target_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+                  safety_failures.append((branch, "branch head SHA could not be validated"))
+                  continue
               present.append(branch)
+              validated_sha[branch] = target_sha
               evidence["results"].append(
                   {
                       "branch": branch,
                       "state": "would_delete" if dry_run else "validated",
-                      "sha": (info.get("commit") or {}).get("sha"),
+                      "sha": target_sha,
                   }
               )
 
@@ -219,23 +236,36 @@ jobs:
               write_evidence()
               raise SystemExit(0)
 
-          _, default_obj = call("GET", default_ref)
-          if default_obj["object"]["sha"] != expected_default_sha:
-              write_evidence()
-              raise SystemExit("default branch moved after cleanup preflight; refusing mutation")
+          assert_default_unchanged("post-preflight validation")
 
           result_by_branch = {item["branch"]: item for item in evidence["results"]}
           for branch in present:
-              _, default_obj = call("GET", default_ref)
-              if default_obj["object"]["sha"] != expected_default_sha:
-                  result_by_branch[branch]["state"] = "not_deleted_default_moved"
-                  write_evidence()
-                  raise SystemExit("default branch moved during cleanup; refusing further mutation")
+              assert_default_unchanged(f"cleanup of {branch}")
               if has_open_pr(branch):
                   result_by_branch[branch]["state"] = "not_deleted_open_pr_created"
                   write_evidence()
                   raise SystemExit(
                       f"branch became the head of an open pull request during cleanup: {branch}"
+                  )
+              status, info = call("GET", branch_path(branch), allow_404=True)
+              if status == 404:
+                  result_by_branch[branch]["state"] = "already_absent_after_preflight"
+                  continue
+              if info.get("protected"):
+                  result_by_branch[branch]["state"] = "not_deleted_became_protected"
+                  write_evidence()
+                  raise SystemExit(f"branch became protected during cleanup: {branch}")
+              status, current_ref = call("GET", read_ref_path(branch), allow_404=True)
+              if status == 404:
+                  result_by_branch[branch]["state"] = "already_absent_after_preflight"
+                  continue
+              current_sha = (current_ref.get("object") or {}).get("sha")
+              if current_sha != validated_sha[branch]:
+                  result_by_branch[branch]["state"] = "not_deleted_target_moved"
+                  result_by_branch[branch]["observed_sha"] = current_sha
+                  write_evidence()
+                  raise SystemExit(
+                      f"branch moved after preflight: {branch}: expected {validated_sha[branch]}, current {current_sha}"
                   )
               call("DELETE", delete_ref_path(branch))
               status, _ = call("GET", read_ref_path(branch), allow_404=True)
