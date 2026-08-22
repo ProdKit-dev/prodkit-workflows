@@ -64,15 +64,15 @@ jobs:
           _, payload = request(f"/actions/runs?{params}")
           runs = payload.get("workflow_runs", [])
 
-          expected = (
+          required = (
               ("CI", ".github/workflows/ci.yml", "push"),
               ("Security", ".github/workflows/security.yml", "push"),
               ("Trusted Release Proof", ".github/workflows/trusted-release-proof.yml", "workflow_dispatch"),
-              ("Release Promotion", ".github/workflows/release-promotion.yml", "workflow_run"),
               ("Release", ".github/workflows/release.yml", "workflow_dispatch"),
               ("Release Verification", ".github/workflows/release-verification.yml", "workflow_run"),
           )
-          for label, path, event in expected:
+          selected = {}
+          for label, path, event in required:
               matches = [
                   run for run in runs
                   if run.get("path") == path
@@ -84,7 +84,22 @@ jobs:
               if not matches:
                   raise SystemExit(f"missing successful {label} run for {release_sha}")
               run = max(matches, key=lambda item: int(item["id"]))
+              selected[label] = run
               print(f"{label.upper().replace(' ', '_')}_RUN_ID={run['id']}")
+
+          promotions = [
+              run for run in runs
+              if run.get("path") == ".github/workflows/release-promotion.yml"
+              and run.get("head_sha") == release_sha
+              and run.get("event") == "workflow_run"
+          ]
+          if promotions:
+              run = max(promotions, key=lambda item: int(item["id"]))
+              print(f"RELEASE_PROMOTION_RUN_ID={run['id']}")
+              print(f"RELEASE_PROMOTION_STATUS={run.get('status')}")
+              print(f"RELEASE_PROMOTION_CONCLUSION={run.get('conclusion')}")
+          else:
+              print("RELEASE_PROMOTION=not-recorded-for-historical-v0.1.1")
 
           tag_status, tag = request("/git/ref/tags/v0.1.1")
           if tag_status != 200:
