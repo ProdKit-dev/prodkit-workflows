@@ -8,6 +8,8 @@
 | --- | --- | --- | --- |
 | Pull request | `pull_request` | Correctness/security feedback before merge | `CI`, `Security`, optional `CodeQL` |
 | Main branch | `push` to `main` | Certify the actual merge SHA | successful exact-SHA `CI` and `Security` |
+| Post-gate cleanup authorization | dormant `workflow_run` caller | Authorize one reviewed exact stale-branch set only after configured exact-SHA gates | gate run IDs + bounded Branch Cleanup dispatch |
+| Branch cleanup | explicit `workflow_dispatch` | Validate and delete only exact reviewed refs | SHA-bound cleanup evidence + verified ref absence |
 | Release candidate | explicit `workflow_dispatch` | Verify permanent gates, run release-only acceptance, build the promotable payload once | completed successful `Trusted Release Proof` + proof-produced payload receipt |
 | Promotion | `workflow_run` after completed successful `Trusted Release Proof` | Dispatch the proven version without racing proof completion or waiting for publication | bounded idempotent Release dispatch |
 | Publication | promoted `workflow_dispatch` | Import/seal the proof-produced payload, optionally attest, and publish | immutable tag + Release + checksums/SBOM; optional GitHub provenance |
@@ -22,18 +24,25 @@ For trusted workloads the default target is `["self-hosted","Linux","X64"]`; `PR
 
 This intentionally avoids hosted probes, resolver jobs, destructive workspace preflight, and automatic runner switching. A workload gets one execution target and either succeeds or fails.
 
+Branch Cleanup defaults to `ubuntu-latest`. Post-Gate Branch Cleanup also prefers `ubuntu-latest` but may honor `PRODKIT_RUNNER_JSON` for trusted private-repository control-plane execution where hosted jobs are unavailable.
+
 ### Single-runner non-blocking rule
 
 The lifecycle must remain correct with only one trusted self-hosted runner. A job occupying that runner must never dispatch another workflow that also needs the runner and then poll, sleep, or otherwise wait for the child to finish. Such a parent owns the only execution slot its child requires and can deadlock the release indefinitely.
 
 Cross-workflow sequencing therefore uses completion boundaries:
 
-1. `Trusted Release Proof` completes successfully and releases its runner;
-2. the separate `Release Promotion` caller starts from that completed workflow's `workflow_run` event, derives the release version from the exact proof `head_sha`, dispatches Release idempotently, and exits;
-3. Release acquires a runner and advances through short sequential release jobs;
-4. `workflow_run` starts independent verification only after Release has completed.
+1. exact-main CI/Security/optional CodeQL complete independently;
+2. Post-Gate Branch Cleanup, when activated, verifies all configured exact-SHA gates, dispatches Branch Cleanup once, and exits without waiting for deletion;
+3. the dispatch-only Branch Cleanup workflow acquires a runner and performs guarded deletion;
+4. `Trusted Release Proof` completes successfully and releases its runner;
+5. the separate `Release Promotion` caller starts from that completed workflow's `workflow_run` event, derives the release version from the exact proof `head_sha`, dispatches Release idempotently, and exits;
+6. Release acquires a runner and advances through short sequential release jobs;
+7. `workflow_run` starts independent verification only after Release has completed.
 
-This **proof-completion boundary** is also required on hosted or multi-runner environments: publication authorization searches only completed successful proof runs, so dispatching Release from a job inside an in-progress proof workflow is a race and is forbidden.
+The **proof-completion boundary** is also required on hosted or multi-runner environments: publication authorization searches only completed successful proof runs, so dispatching Release from a job inside an in-progress proof workflow is a race and is forbidden.
+
+The **cleanup authorization boundary** follows the same non-blocking principle: the post-gate authorizer never performs deletion itself and never waits for the dispatched Branch Cleanup run.
 
 Long-running controller/orchestrator workflows are not part of the generated default lifecycle.
 
@@ -45,6 +54,22 @@ Normal CI and Security use compact reusable workflows. Each renders one stable w
 - `security / Security Required`
 
 Compatibility and scanning dimensions execute as steps, and the final aggregate verifier fails closed if any enabled control failed. Intermediate steps may use `continue-on-error` to collect later evidence; the aggregate evaluates their recorded `outcome`, not only their visual step presentation.
+
+## Post-gate branch cleanup
+
+`Post-Gate Branch Cleanup` is a permanent dormant `workflow_run` authorization caller. It does nothing while `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` is empty.
+
+When activated with a reviewed exact branch list, the reusable authorizer requires the triggering run to originate from a default-branch `push`, requires the trigger `head_sha` to equal the current default-branch SHA, validates the target cleanup workflow is still `workflow_dispatch` only, and verifies the configured required exact-SHA push workflows by immutable workflow path.
+
+The default required gates are CI and Security. `PRODKIT_GATED_CLEANUP_GATES_JSON` may provide an explicit non-empty list of `{name,path}` objects. The caller listens by default for CI, Security, and CodeQL completion events. Any additional configured gate must also be named in that static trigger list so its completion can become the final authorization event.
+
+Missing or in-progress required gates cause the authorization run to exit successfully as `deferred`. A completed non-success required gate fails closed. Once all configured gates are green, only the last completed required gate event may dispatch, which prevents CI/Security/CodeQL completion fan-out from creating duplicate cleanup requests.
+
+Immediately before dispatch the authorizer rereads the default branch. It then calls the permanent `Branch Cleanup` workflow with the exact reviewed branch list, `dry_run=false`, and the exact certified SHA. The authorizer has `actions: write` but remains `contents: read`; it cannot delete refs.
+
+The downstream Branch Cleanup workflow remains the only mutation boundary. It independently requires `workflow_dispatch`, binds deletion to the supplied exact SHA, performs complete preflight, rejects default/protected/open-PR branches, revalidates every target SHA immediately before deletion, rechecks the default SHA throughout mutation, and verifies every deleted ref is absent.
+
+For human-reviewed maintenance, run Branch Cleanup with `dry_run=true` before enabling the post-gate branch-list variable. Clear `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` after the one-shot cleanup request is closed.
 
 ## Release candidate
 
