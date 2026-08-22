@@ -62,9 +62,10 @@ on:
         type: boolean
         default: true
       attest:
+        description: Generate GitHub Artifact Attestations. Enable only when the repository/organization plan supports attestations; when enabled, attestation failure is release-fatal.
         required: false
         type: boolean
-        default: true
+        default: false
       environment:
         required: false
         type: string
