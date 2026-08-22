@@ -27,6 +27,7 @@ def main() -> None:
     reusable_release = text(".github/workflows/reusable-release.yml")
     compatibility_release = text(".github/workflows/reusable-release-pipeline.yml")
     proof_template = text("templates/caller/trusted-release-proof.yml")
+    promotion_template = text("templates/caller/release-promotion.yml")
     proof_adapter_template = text("templates/consumer/.prodkit/workflows/release-proof.sh")
     verification_template = text("templates/caller/release-verification.yml")
     release_template = text("templates/caller/release.yml")
@@ -78,11 +79,31 @@ def main() -> None:
         "required_workflows_json: '[\"CI\",\"Security\"]'",
         "actions: read",
         "reusable-release-proof.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        'node_version: "24"',
+    ):
+        require(proof_template, needle, "trusted release proof caller template")
+    for forbidden in (
+        "reusable-release-promote.yml@",
         "needs: proof",
         "actions: write",
     ):
-        require(proof_template, needle, "trusted release proof caller template")
+        reject(proof_template, forbidden, "trusted release proof caller template")
+
+    # Promotion must start only after the proof workflow itself is complete.
+    for needle in (
+        "workflow_run:",
+        'workflows: ["Trusted Release Proof"]',
+        "types: [completed]",
+        "github.event.workflow_run.event == 'workflow_dispatch'",
+        "github.event.workflow_run.conclusion == 'success'",
+        "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "workflow_run.head_sha",
+        "actions: write",
+    ):
+        require(promotion_template, needle, "release promotion caller template")
+    for forbidden in ("time.sleep(", "while time.time()", "wait_for_release"):
+        reject(promotion_template, forbidden, "release promotion caller template")
+
     for forbidden in (
         "ci-python.sh",
         "ci-node.sh",
@@ -210,15 +231,30 @@ def main() -> None:
 
     require(
         bootstrap,
+        'src / "caller/release-promotion.yml"',
+        "consumer bootstrap",
+    )
+    require(
+        bootstrap,
         'src / "caller/release-verification.yml"',
         "consumer bootstrap",
+    )
+    require(
+        audit,
+        '"release-promotion.yml": "reusable-release-promote.yml"',
+        "organization audit",
     )
     require(
         audit,
         '"release-verification.yml": "reusable-release-verification.yml"',
         "organization audit",
     )
-    require(audit, "must not wait for Release on the trusted runner", "organization audit")
+    require(
+        audit,
+        "must finish before Release promotion starts",
+        "organization audit",
+    )
+    require(audit, "must not poll or wait for Release", "organization audit")
 
     require(lifecycle, "Single-runner non-blocking rule", "lifecycle documentation")
     require(
@@ -226,6 +262,7 @@ def main() -> None:
         "must never dispatch another workflow that also needs the runner and then poll",
         "lifecycle documentation",
     )
+    require(lifecycle, "proof-completion boundary", "lifecycle documentation")
     require(lifecycle, "Artifact Attestations are optional", "lifecycle documentation")
     require(lifecycle, "Re-run failed jobs", "lifecycle documentation")
     require(lifecycle, "proof-produced", "lifecycle documentation")
