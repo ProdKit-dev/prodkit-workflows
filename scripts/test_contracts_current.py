@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import audit_org
 import test_contracts
 
 
@@ -21,6 +22,39 @@ def reject(path: str, fragment: str, label: str) -> None:
         raise SystemExit(f"{label} contains forbidden {fragment!r}")
 
 
+def test_cleanup_trigger_parser() -> None:
+    canonical = """name: Branch Cleanup
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+permissions:
+  contents: read
+"""
+    if audit_org.workflow_events(canonical) != {"workflow_dispatch"}:
+        raise SystemExit("cleanup trigger parser rejected canonical workflow_dispatch-only caller")
+
+    malicious = (
+        '  "pull_request_target":\n',
+        "  'schedule':\n",
+        "  repository_dispatch:\n",
+        "  workflow_run:\n",
+    )
+    for extra in malicious:
+        text = canonical.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n" + extra)
+        if audit_org.workflow_events(text) == {"workflow_dispatch"}:
+            raise SystemExit(f"cleanup trigger parser ignored additional event: {extra.strip()}")
+
+    ambiguous = """name: Branch Cleanup
+on: [workflow_dispatch, push]
+permissions:
+  contents: write
+"""
+    if audit_org.workflow_events(ambiguous) == {"workflow_dispatch"}:
+        raise SystemExit("cleanup trigger parser accepted ambiguous inline event syntax")
+
+
 def main() -> None:
     test_contracts.EXPECTED_GITHUB_WORKFLOWS.update(
         {
@@ -29,13 +63,15 @@ def main() -> None:
             "release-verification.yml",
             "reusable-release-promote.yml",
             "reusable-release-verification.yml",
+            "reusable-branch-cleanup.yml",
         }
     )
     test_contracts.DEFAULT_CALLERS.update(
-        {"release-promotion.yml", "release-verification.yml"}
+        {"release-promotion.yml", "release-verification.yml", "branch-cleanup.yml"}
     )
     test_contracts.EXPECTED_SELF_ADAPTERS.add("release-proof.sh")
     test_contracts.main()
+    test_cleanup_trigger_parser()
 
     require(
         "templates/caller/trusted-release-proof.yml",
@@ -91,6 +127,60 @@ def main() -> None:
         ".github/workflows/release-verification.yml",
         "uses: ./.github/workflows/reusable-release-verification.yml",
         "control-plane release verification",
+    )
+
+    cleanup = ".github/workflows/reusable-branch-cleanup.yml"
+    for fragment in (
+        "workflow_call:",
+        "branches_json:",
+        "expected_default_sha:",
+        "dry_run:",
+        'default: \'"ubuntu-latest"\'',
+        "Branch Cleanup Required",
+        "group: branch-cleanup-${{ github.repository }}",
+        "cancel-in-progress: false",
+        "Authorize explicit dispatch",
+        'EVENT_NAME: ${{ github.event_name }}',
+        'if [[ "$EVENT_NAME" != "workflow_dispatch" ]]',
+        "authorized only from an explicit workflow_dispatch caller",
+        "def read_ref_path(branch: str)",
+        "def delete_ref_path(branch: str)",
+        "def has_open_pr(branch: str)",
+        "def assert_default_unchanged(stage: str)",
+        "validated_sha = {}",
+        "default branch is never deletable",
+        "branch is the head of an open pull request",
+        "branch is protected by repository policy",
+        "cleanup preflight rejected targets",
+        "post-preflight validation",
+        "branch became the head of an open pull request during cleanup",
+        "branch became protected during cleanup",
+        "branch moved after preflight",
+        "not_deleted_target_moved",
+        'current_sha != validated_sha[branch]',
+        'call("DELETE", delete_ref_path(branch))',
+        'call("GET", read_ref_path(branch), allow_404=True)',
+        "branch deletion did not verify absent",
+        "cleanup-evidence.json",
+    ):
+        require(cleanup, fragment, "reusable branch cleanup")
+
+    caller = "templates/caller/branch-cleanup.yml"
+    for fragment in (
+        "workflow_dispatch:",
+        "contents: write",
+        "pull-requests: read",
+        "reusable-branch-cleanup.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "expected_default_sha: ${{ github.sha }}",
+        'runner_json: \'"ubuntu-latest"\'',
+        "dry_run: ${{ inputs.dry_run }}",
+    ):
+        require(caller, fragment, "generated branch cleanup caller")
+    reject(caller, "issue_comment:", "generated branch cleanup caller authorization")
+    require(
+        "scripts/audit_org.py",
+        'workflow_events(text) != {"workflow_dispatch"}',
+        "branch cleanup trigger audit",
     )
 
 
