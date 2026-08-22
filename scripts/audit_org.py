@@ -35,20 +35,37 @@ def file_text(repo, path, token):
 
 
 def workflow_events(text):
+    """Return top-level workflow events, or None when the on: mapping is non-canonical/ambiguous."""
     lines = text.splitlines()
-    try:
-        start = lines.index("on:")
-    except ValueError:
-        return set()
+    start = None
+    on_key = re.compile(r'^\s*(?:on|"on"|\'on\'):\s*(?:#.*)?$')
+    for index, line in enumerate(lines):
+        if on_key.fullmatch(line):
+            if line[: len(line) - len(line.lstrip())]:
+                continue
+            start = index
+            break
+    if start is None:
+        return None
+
+    key_pattern = re.compile(
+        r'^  (?:(?:"([A-Za-z0-9_-]+)")|(?:\'([A-Za-z0-9_-]+)\')|([A-Za-z0-9_-]+)):\s*(?:.*)?$'
+    )
     events = set()
     for line in lines[start + 1 :]:
-        if not line.strip():
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if not line.startswith(" "):
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
             break
-        match = re.match(r"^  ([A-Za-z0-9_-]+):(?:\s|$)", line)
-        if match:
-            events.add(match.group(1))
+        if indent > 2:
+            continue
+        if indent != 2:
+            return None
+        match = key_pattern.fullmatch(line)
+        if not match:
+            return None
+        events.add(next(group for group in match.groups() if group is not None))
     return events
 
 
