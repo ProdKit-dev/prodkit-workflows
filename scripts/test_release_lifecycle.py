@@ -77,32 +77,68 @@ def main() -> None:
     ):
         require(verification_template, needle, "release verification caller template")
 
+    # Release authorization belongs to the central publisher, not copied Python
+    # in every consumer caller.
     require(
         release_template,
-        "PROOF_WORKFLOW_FILE: .github/workflows/trusted-release-proof.yml",
+        "proof_workflow_file: .github/workflows/trusted-release-proof.yml",
         "release caller template",
     )
-    require(release_template, 'run.get("path") == workflow_file', "release caller template")
-    reject(release_template, "PROOF_WORKFLOW: Trusted Release Proof", "release caller template")
+    reject(release_template, "proof-gate:", "release caller template")
+    reject(release_template, "urllib.request", "release caller template")
+    require(reusable_release, "proof_workflow_file:", "reusable release proof input")
+    require(
+        reusable_release,
+        "x.get('path')==proof_file",
+        "reusable release proof authorization",
+    )
+    require(
+        reusable_release,
+        "missing successful exact-SHA workflow_dispatch proof",
+        "reusable release proof authorization",
+    )
 
     # The reusable publisher owns version-level serialization. A direct caller
-    # must not claim the same release-${version} group or it can hold the group
-    # while waiting for the called workflow, preventing the called publisher
-    # from ever materializing.
+    # must not claim the same release-${version} group.
     require(reusable_release, "group: release-${{ inputs.version }}", "reusable release")
     reject(release_template, "group: release-${{ inputs.version }}", "release caller template")
 
+    # Release publication is checkpointed at job boundaries. A late attest or
+    # publish failure can use GitHub's "re-run failed jobs" semantics without
+    # rebuilding a successful sealed payload.
+    for needle in (
+        "  prepare:",
+        "  build:",
+        "  attest:",
+        "  publish:",
+        "name: Upload sealed release payload",
+        "actions/download-artifact@",
+        "needs: [prepare, build]",
+        "needs: [prepare, build, attest]",
+        "Create or resume immutable publication",
+    ):
+        require(reusable_release, needle, "resumable release publisher")
+    reject(reusable_release, "  release:\n    name: Guarded release", "resumable release publisher")
+    require(
+        reusable_release,
+        "if name in remote: continue",
+        "resumable draft asset upload",
+    )
+    reject(
+        reusable_release,
+        "for a in rel.get('assets',[]): request('DELETE',a['url'])",
+        "resumable draft asset upload",
+    )
+
     # GitHub Artifact Attestations are plan/repository-capability dependent.
-    # Both the current publisher and retained compatibility controller must
-    # remain opt-in. Explicit opt-in stays release-fatal.
     attest_block = reusable_release.split("      attest:\n", 1)[1].split(
         "      environment:\n", 1
     )[0]
     require(attest_block, "default: false", "reusable release attestation input")
     require(
         reusable_release,
-        "if: steps.preflight.outputs.published != 'true' && inputs.attest",
-        "reusable release attestation step",
+        "needs.prepare.outputs.published != 'true' && inputs.attest",
+        "reusable release attestation job",
     )
     require(reusable_release, "uses: actions/attest@", "reusable release attestation step")
 
@@ -119,6 +155,13 @@ def main() -> None:
         "attest: ${{ inputs.attest }}",
         "compatibility release attestation forwarding",
     )
+    require(
+        compatibility_release,
+        "proof_workflow_file: ${{ inputs.proof_workflow_file }}",
+        "compatibility release proof forwarding",
+    )
+    reject(compatibility_release, "proof-gate:", "compatibility release pipeline")
+    reject(compatibility_release, "urllib.request", "compatibility release pipeline")
 
     require(
         bootstrap,
@@ -139,7 +182,9 @@ def main() -> None:
         "lifecycle documentation",
     )
     require(lifecycle, "Artifact Attestations are optional", "lifecycle documentation")
+    require(lifecycle, "Re-run failed jobs", "lifecycle documentation")
     require(contracts, "Artifact Attestations are capability-dependent", "consumer contracts")
+    require(contracts, "sealed payload", "consumer contracts")
     require(
         security_model,
         "Artifact Attestations are an optional additional trust signal",
@@ -150,6 +195,7 @@ def main() -> None:
         "Artifact Attestations are an optional additional provenance layer",
         "README",
     )
+    require(readme, "Re-run failed jobs", "README")
 
     print("release lifecycle contracts passed")
 
