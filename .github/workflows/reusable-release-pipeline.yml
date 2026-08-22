@@ -24,6 +24,11 @@ on:
         required: false
         type: string
         default: trusted-release-proof.yml
+      reuse_proof_payload:
+        description: Reuse a proof-produced promotable payload. Defaults off for compatibility with historical proof adapters.
+        required: false
+        type: boolean
+        default: false
       required_push_workflows_json:
         description: Successful push workflows required on the exact target SHA before publication.
         required: false
@@ -92,6 +97,7 @@ jobs:
       prerelease: ${{ inputs.prerelease }}
       runner_json: ${{ inputs.runner_json }}
       proof_workflow_file: ${{ inputs.proof_workflow_file }}
+      reuse_proof_payload: ${{ inputs.reuse_proof_payload }}
       required_workflows_json: ${{ inputs.required_push_workflows_json }}
       python_enabled: ${{ inputs.python_enabled }}
       python_version: ${{ inputs.python_version }}
