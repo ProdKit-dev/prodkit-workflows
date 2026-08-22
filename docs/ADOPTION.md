@@ -63,8 +63,11 @@ For a new release:
 1. merge the release candidate to `main`;
 2. wait for exact-main CI and Security to pass;
 3. dispatch `Trusted Release Proof` on `main` — the proof source is automatically `${{ github.sha }}`;
-4. after proof succeeds, dispatch `Release` on the same `main` revision with the semantic version;
-5. Release automatically uses `${{ github.sha }}` as the target and verifies exact-SHA CI, Security, and proof evidence before any tag/publication transaction.
+4. after proof succeeds, wait for the `Release Promotion` workflow triggered from that completed proof; it derives the semantic version from the exact source and dispatches `Release` automatically;
+5. wait for the automatically dispatched `Release` run, which uses `${{ github.sha }}` as the target and verifies exact-SHA CI, Security, and proof evidence before any tag/publication transaction;
+6. wait for `Release Verification` after successful publication to independently verify the immutable release transaction.
+
+Do not manually dispatch `Release` after a successful proof when `Release Promotion` is active. A manual Release dispatch is an operator recovery action only after confirming automatic promotion did not already create an active or completed exact-source Release run; otherwise it creates redundant production execution and ambiguous approval/failure history.
 
 Operators should not manually copy commit SHAs between these workflows.
 
