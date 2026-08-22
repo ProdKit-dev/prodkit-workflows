@@ -88,6 +88,19 @@ def main() -> None:
     require(reusable_release, "group: release-${{ inputs.version }}", "reusable release")
     reject(release_template, "group: release-${{ inputs.version }}", "release caller template")
 
+    # GitHub Artifact Attestations are plan/repository-capability dependent.
+    # They must remain opt-in so unsupported private organizations can still
+    # publish fully checksummed/SBOM-backed releases. Explicit opt-in stays
+    # release-fatal and is guarded by inputs.attest.
+    attest_block = reusable_release.split("      attest:\n", 1)[1].split("      environment:\n", 1)[0]
+    require(attest_block, "default: false", "reusable release attestation input")
+    require(
+        reusable_release,
+        "if: steps.preflight.outputs.published != 'true' && inputs.attest",
+        "reusable release attestation step",
+    )
+    require(reusable_release, "uses: actions/attest@", "reusable release attestation step")
+
     require(
         bootstrap,
         'src / "caller/release-verification.yml"',
@@ -106,6 +119,7 @@ def main() -> None:
         "must never dispatch another workflow that also needs the runner and then poll",
         "lifecycle documentation",
     )
+    require(lifecycle, "Artifact Attestations are optional", "lifecycle documentation")
 
     print("release lifecycle contracts passed")
 
