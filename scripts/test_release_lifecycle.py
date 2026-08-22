@@ -24,12 +24,16 @@ def main() -> None:
     promote = text(".github/workflows/reusable-release-promote.yml")
     verification = text(".github/workflows/reusable-release-verification.yml")
     reusable_release = text(".github/workflows/reusable-release.yml")
+    compatibility_release = text(".github/workflows/reusable-release-pipeline.yml")
     proof_template = text("templates/caller/trusted-release-proof.yml")
     verification_template = text("templates/caller/release-verification.yml")
     release_template = text("templates/caller/release.yml")
     bootstrap = text("scripts/bootstrap_consumer.py")
     audit = text("scripts/audit_org.py")
     lifecycle = text("docs/LIFECYCLE.md")
+    contracts = text("docs/CONTRACTS.md")
+    security_model = text("docs/SECURITY-MODEL.md")
+    readme = text("README.md")
 
     for needle in (
         "actions: write",
@@ -89,10 +93,11 @@ def main() -> None:
     reject(release_template, "group: release-${{ inputs.version }}", "release caller template")
 
     # GitHub Artifact Attestations are plan/repository-capability dependent.
-    # They must remain opt-in so unsupported private organizations can still
-    # publish fully checksummed/SBOM-backed releases. Explicit opt-in stays
-    # release-fatal and is guarded by inputs.attest.
-    attest_block = reusable_release.split("      attest:\n", 1)[1].split("      environment:\n", 1)[0]
+    # Both the current publisher and retained compatibility controller must
+    # remain opt-in. Explicit opt-in stays release-fatal.
+    attest_block = reusable_release.split("      attest:\n", 1)[1].split(
+        "      environment:\n", 1
+    )[0]
     require(attest_block, "default: false", "reusable release attestation input")
     require(
         reusable_release,
@@ -100,6 +105,20 @@ def main() -> None:
         "reusable release attestation step",
     )
     require(reusable_release, "uses: actions/attest@", "reusable release attestation step")
+
+    compatibility_attest_block = compatibility_release.split("      attest:\n", 1)[1].split(
+        "      environment:\n", 1
+    )[0]
+    require(
+        compatibility_attest_block,
+        "default: false",
+        "compatibility release attestation input",
+    )
+    require(
+        compatibility_release,
+        "attest: ${{ inputs.attest }}",
+        "compatibility release attestation forwarding",
+    )
 
     require(
         bootstrap,
@@ -120,6 +139,17 @@ def main() -> None:
         "lifecycle documentation",
     )
     require(lifecycle, "Artifact Attestations are optional", "lifecycle documentation")
+    require(contracts, "Artifact Attestations are capability-dependent", "consumer contracts")
+    require(
+        security_model,
+        "Artifact Attestations are an optional additional trust signal",
+        "security model",
+    )
+    require(
+        readme,
+        "Artifact Attestations are an optional additional provenance layer",
+        "README",
+    )
 
     print("release lifecycle contracts passed")
 

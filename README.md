@@ -105,12 +105,15 @@ workflow_dispatch Release(version)
   -> require successful exact-SHA Trusted Release Proof
   -> validate manifest/version/notes
   -> build product payloads
-  -> source archive + SBOM + checksums + attestation
+  -> source archive + SBOM + checksums
+  -> optional GitHub Artifact Attestation when explicitly enabled and supported
   -> immutable vX.Y.Z tag
   -> draft-first GitHub Release
   -> upload/read-back verification
   -> publish + remote checksum verification
 ```
+
+GitHub Artifact Attestations are an optional additional provenance layer. They default off because feature availability depends on repository visibility and organization plan. Explicitly enabling attestations keeps failure release-fatal; the baseline release still requires exact-source proof, SBOM, `SHA256SUMS`, and remote asset verification.
 
 A release caller does not accept a manually copied `target_sha`. A proof caller does not accept a manually copied `source_sha`. Dispatch both workflows from the intended `main` revision.
 

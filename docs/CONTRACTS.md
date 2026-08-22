@@ -143,7 +143,9 @@ The generated caller supplies:
 target_sha: ${{ github.sha }}
 ```
 
-The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds central source archive/SBOM/metadata/checksums/attestation, creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set. Consumer payloads must be flat regular files with transport-stable visible names; hidden names such as `.gitignore` fail closed before sealing because GitHub may normalize them during Release upload.
+The publisher verifies target SHA equals current `main`, validates the release manifest/version/notes/changelog, executes the repository release-build adapter, validates the product payload, adds the central source archive, SPDX SBOM, metadata, and SHA-256 checksums, then optionally creates a GitHub Artifact Attestation when `attest: true`. It creates or verifies the immutable tag, uses draft-first GitHub Release publication, reads assets back, and verifies the final published checksum set. Consumer payloads must be flat regular files with transport-stable visible names; hidden names such as `.gitignore` fail closed before sealing because GitHub may normalize them during Release upload.
+
+GitHub Artifact Attestations are capability-dependent and therefore opt-in in both the direct publisher and retained compatibility pipeline. The default release contract does not require them. When explicitly enabled, attestation failure remains release-fatal. Exact-source proof, SBOM generation, `SHA256SUMS`, draft asset read-back, published asset read-back, and digest verification remain required independently of attestation support.
 
 Tag movement is forbidden. An existing tag on another commit fails hard. A verified already-published release is treated idempotently.
 
