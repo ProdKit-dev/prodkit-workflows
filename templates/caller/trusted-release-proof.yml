@@ -7,17 +7,28 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   proof:
     name: proof
     permissions:
       contents: read
+      actions: read
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-proof.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
       source_sha: ${{ github.sha }}
       runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
       proof_script: .prodkit/workflows/release-proof.sh
+      required_workflows_json: '["CI","Security"]'
+      manifest_path: .prodkit/release.json
+      prepare_release_payload: true
+      python_enabled: true
+      python_version: "3.12"
+      uv_version: "0.10.0"
+      node_enabled: true
+      node_version: "22"
+      pnpm_version: "11.21.0"
 
   promote:
     name: promote
