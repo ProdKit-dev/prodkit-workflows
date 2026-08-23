@@ -103,6 +103,7 @@ def main():
         "security.yml": "reusable-security-compact.yml",
         "branch-cleanup.yml": "reusable-branch-cleanup.yml",
         "post-gate-branch-cleanup.yml": "reusable-gated-branch-cleanup.yml",
+        "release-proof-dispatch.yml": "reusable-release-proof-dispatch.yml",
         "trusted-release-proof.yml": "reusable-release-proof.yml",
         "release-promotion.yml": "reusable-release-promote.yml",
         "release.yml": "reusable-release.yml",
@@ -202,9 +203,36 @@ def main():
                         "post-gate-branch-cleanup.yml must delegate deletion to Branch Cleanup"
                     )
 
+            if filename == "release-proof-dispatch.yml":
+                required_fragments = (
+                    "workflow_run:",
+                    'workflows: ["CI", "Security"]',
+                    "types: [completed]",
+                    "branches: [main]",
+                    "github.event.workflow_run.event == 'push'",
+                    "github.event.workflow_run.conclusion == 'success'",
+                    "actions: write",
+                    "source_sha: ${{ github.event.workflow_run.head_sha }}",
+                    'runner_json: \'"ubuntu-latest"\'',
+                    "required_workflows_json: '[\"CI\",\"Security\"]'",
+                    "proof_workflow_file: trusted-release-proof.yml",
+                )
+                if any(fragment not in text for fragment in required_fragments):
+                    errors.append(
+                        "release-proof-dispatch.yml must remain hosted, exact-main and gate-driven"
+                    )
+                if workflow_events(text) != {"workflow_run"}:
+                    errors.append(
+                        "release-proof-dispatch.yml must expose workflow_run as its only trigger"
+                    )
+                if "contents: write" in text:
+                    errors.append(
+                        "release-proof-dispatch.yml may dispatch proof but must not mutate repository content"
+                    )
+
             if filename == "trusted-release-proof.yml":
-                if "workflow_dispatch:" not in text:
-                    errors.append("trusted-release-proof.yml must remain explicitly dispatched")
+                if workflow_events(text) != {"workflow_dispatch"}:
+                    errors.append("trusted-release-proof.yml must remain workflow_dispatch-only")
                 if "reusable-release-promote.yml@" in text or "actions: write" in text:
                     errors.append(
                         "trusted-release-proof.yml must finish before Release promotion starts"
