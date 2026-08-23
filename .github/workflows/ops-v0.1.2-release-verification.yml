@@ -1,0 +1,20 @@
+name: Verify v0.1.2 Publication
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'ops/v0.1.2-release-recovery' }}
+    uses: ProdKit-dev/prodkit-workflows/.github/workflows/reusable-release-verification.yml@14088abf4f4a2f431f58b27c69d74f1b38d05252
+    with:
+      source_sha: 14088abf4f4a2f431f58b27c69d74f1b38d05252
+      runner_json: '"ubuntu-latest"'
+      manifest_path: .prodkit/release.json
+      release_workflow_file: release.yml
