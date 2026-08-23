@@ -49,12 +49,14 @@ jobs:
           python3 scripts/test_release_metadata_compat.py
           python3 scripts/test_release_lifecycle.py
           python3 scripts/test_cancelled_diagnostics.py
-      - name: Commit validated candidate
+      - name: Push validated non-workflow changes
         shell: bash
         run: |
           set -euo pipefail
+          git restore --source=HEAD --staged --worktree .github/workflows
+          git clean -fd -- .github/workflows
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m "release: v0.1.3"
+          git commit -m "release: v0.1.3 non-workflow contracts"
           git push origin HEAD:release/v0.1.3-verification-dispatch
