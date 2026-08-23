@@ -32,3 +32,17 @@ jobs:
       proof_workflow_file: .github/workflows/trusted-release-proof.yml
       reuse_proof_payload: true
       environment: release
+
+  verification-dispatch:
+    name: dispatch verification
+    needs: release
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/reusable-release-verification-dispatch.yml
+    with:
+      source_sha: ${{ github.sha }}
+      version: ${{ inputs.version }}
+      release_run_id: ${{ github.run_id }}
+      runner_json: '"ubuntu-latest"'
+      verification_workflow_file: release-verification.yml
