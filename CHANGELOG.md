@@ -2,6 +2,17 @@
 
 All notable changes to this repository are documented here.
 
+## [0.1.4] - 2026-08-23
+
+- Add automatic release-intent detection after exact-main `CI`/`Security` completion without converting `Trusted Release Proof` away from its dispatch-only trust boundary.
+- Add `reusable-release-proof-dispatch.yml` and generated `Release Proof Dispatch` callers. They run from successful default-branch gate completions, require the trigger SHA to still be current `main`, derive one canonical SemVer from the release manifest, and proceed only while that version is unpublished.
+- Defer cleanly while another required exact-SHA gate is still queued/in progress, fail closed when a required gate has completed unsuccessfully, ignore stale-main completions, and avoid duplicate active/successful proof dispatches.
+- Keep the automatic dispatcher GitHub-hosted, non-blocking, `contents: read`, and limited to `actions: write`; it cannot publish, tag, or mutate repository content.
+- Keep `Trusted Release Proof` itself `workflow_dispatch` only and source-bound to `${{ github.sha }}`. The dispatcher validates that caller contract before invoking it on `main`, preserving the existing exact-proof authorization used by Release.
+- Preserve the existing completion topology after proof: successful proof → `Release Promotion` → dispatch-only `Release` → protected `release` environment publication → immutable-tag `Release Verification`.
+- Add bootstrap, organization-audit, workflow-inventory, and regression-test coverage so consumers must install and immutably pin the new automatic proof-dispatch stage together with the rest of the release workflow family.
+- Include the v0.1.3 verification-dispatch interpolation fix and its regression guard in the next immutable consumer pin.
+
 ## [0.1.3] - 2026-08-23
 
 - Fix automatic post-publication verification so it cannot be suppressed by GitHub's chained `workflow_run` depth limit.

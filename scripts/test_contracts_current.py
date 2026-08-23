@@ -60,10 +60,12 @@ def main() -> None:
         {
             "branch-cleanup.yml",
             "post-gate-branch-cleanup.yml",
+            "release-proof-dispatch.yml",
             "trusted-release-proof.yml",
             "release-promotion.yml",
             "release-verification.yml",
             "reusable-release-promote.yml",
+            "reusable-release-proof-dispatch.yml",
             "reusable-release-verification.yml",
             "reusable-release-verification-dispatch.yml",
             "reusable-branch-cleanup.yml",
@@ -72,6 +74,7 @@ def main() -> None:
     )
     test_contracts.DEFAULT_CALLERS.update(
         {
+            "release-proof-dispatch.yml",
             "release-promotion.yml",
             "release-verification.yml",
             "branch-cleanup.yml",
@@ -93,6 +96,16 @@ def main() -> None:
         "generated proof completion boundary",
     )
     require(
+        "templates/caller/release-proof-dispatch.yml",
+        'workflows: ["CI", "Security"]',
+        "generated automatic proof dispatch",
+    )
+    require(
+        "templates/caller/release-proof-dispatch.yml",
+        "reusable-release-proof-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "generated automatic proof dispatcher pin",
+    )
+    require(
         "templates/caller/release-promotion.yml",
         'workflows: ["Trusted Release Proof"]',
         "generated proof-completion promotion",
@@ -106,6 +119,11 @@ def main() -> None:
         "templates/caller/release-promotion.yml",
         "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
         "generated release promotion",
+    )
+    require(
+        ".github/workflows/release-proof-dispatch.yml",
+        "uses: ./.github/workflows/reusable-release-proof-dispatch.yml",
+        "control-plane automatic proof dispatch",
     )
     require(
         ".github/workflows/trusted-release-proof.yml",
@@ -162,6 +180,26 @@ def main() -> None:
         "source_sha: ${{ github.sha }}",
         "generated immutable-ref verification source",
     )
+    proof_dispatcher = ".github/workflows/reusable-release-proof-dispatch.yml"
+    for fragment in (
+        "workflow_call:",
+        "actions: write",
+        "contents: read",
+        "release-proof-dispatch-${{ inputs.source_sha }}",
+        "required_workflows_json:",
+        "proof_workflow_file:",
+        "release proof dispatch deferred until exact-main gates complete",
+        "Trusted Release Proof caller must remain workflow_dispatch-only",
+        'expected_source_contract = "source_sha: $" + "{{ github.sha }}"',
+        "successful exact-source Trusted Release Proof already exists",
+        "active exact-source Trusted Release Proof already exists",
+        '"ref": main_branch',
+        "/dispatches",
+    ):
+        require(proof_dispatcher, fragment, "reusable proof dispatcher")
+    reject(proof_dispatcher, "time.sleep(", "proof dispatcher must not wait for child")
+    reject(proof_dispatcher, "contents: write", "proof dispatcher mutation boundary")
+
     dispatcher = ".github/workflows/reusable-release-verification-dispatch.yml"
     for fragment in (
         "workflow_call:",
@@ -323,6 +361,11 @@ def main() -> None:
         "scripts/audit_org.py",
         '"post-gate-branch-cleanup.yml": "reusable-gated-branch-cleanup.yml"',
         "post-gate cleanup organization audit",
+    )
+    require(
+        "scripts/audit_org.py",
+        '"release-proof-dispatch.yml": "reusable-release-proof-dispatch.yml"',
+        "automatic proof dispatch organization audit",
     )
 
 
