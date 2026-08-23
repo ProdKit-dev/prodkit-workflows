@@ -1,0 +1,175 @@
+name: v0.1.4 Closeout
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  closeout:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'ops/v0.1.4-closeout' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: a0c292ee6a276a3f9b05470e58c4d5f3ed2130e7
+      OBSERVER_PR: '43'
+      HELPER_PR: ${{ github.event.pull_request.number }}
+      HELPER_BRANCH: ops/v0.1.4-closeout
+    steps:
+      - name: Close evidence PRs and delegate canonical cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from typing import Any
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          expected_main = os.environ["EXPECTED_MAIN"]
+          observer_pr = int(os.environ["OBSERVER_PR"])
+          helper_pr = int(os.environ["HELPER_PR"])
+          helper_branch = os.environ["HELPER_BRANCH"]
+          root = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-v0.1.4-closeout",
+          }
+
+          def api(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+              raw = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(
+                  root + path,
+                  data=raw,
+                  method=method,
+                  headers={**headers, **({"Content-Type": "application/json"} if raw else {})},
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as response:
+                      body = response.read()
+                      return None if not body else json.loads(body)
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode(errors="replace")
+                  raise SystemExit(f"GitHub API {method} {path} failed: HTTP {exc.code}: {body[:800]}") from exc
+
+          def main_sha() -> str:
+              return str(api("GET", "/git/ref/heads/main")["object"]["sha"])
+
+          def open_prs_for(branch: str) -> list[dict[str, Any]]:
+              owner = repo.split("/", 1)[0]
+              query = urllib.parse.urlencode({"state": "open", "head": f"{owner}:{branch}", "per_page": 100})
+              return list(api("GET", f"/pulls?{query}"))
+
+          def workflow_runs() -> list[dict[str, Any]]:
+              query = urllib.parse.urlencode({"event": "workflow_dispatch", "branch": "main", "per_page": 100})
+              payload = api("GET", f"/actions/workflows/branch-cleanup.yml/runs?{query}")
+              return list(payload.get("workflow_runs", []))
+
+          def dispatch_cleanup(branches: list[str], *, dry_run: bool) -> int:
+              if main_sha() != expected_main:
+                  raise SystemExit("main moved before canonical cleanup dispatch")
+              before = {int(run["id"]) for run in workflow_runs()}
+              api(
+                  "POST",
+                  "/actions/workflows/branch-cleanup.yml/dispatches",
+                  {
+                      "ref": "main",
+                      "inputs": {
+                          "branches_json": json.dumps(branches, separators=(",", ":")),
+                          "dry_run": dry_run,
+                          "expected_default_sha": expected_main,
+                      },
+                  },
+              )
+              deadline = time.monotonic() + 180
+              run: dict[str, Any] | None = None
+              while time.monotonic() < deadline:
+                  candidates = [
+                      item
+                      for item in workflow_runs()
+                      if int(item["id"]) not in before
+                      and item.get("head_sha") == expected_main
+                      and item.get("event") == "workflow_dispatch"
+                  ]
+                  if candidates:
+                      run = max(candidates, key=lambda item: int(item["id"]))
+                      break
+                  time.sleep(2)
+              if run is None:
+                  raise SystemExit("canonical Branch Cleanup run did not materialize")
+              run_id = int(run["id"])
+              deadline = time.monotonic() + 420
+              while time.monotonic() < deadline:
+                  current = api("GET", f"/actions/runs/{run_id}")
+                  if current.get("status") == "completed":
+                      if current.get("conclusion") != "success":
+                          raise SystemExit(
+                              f"canonical Branch Cleanup {run_id} failed: {current.get('conclusion')}"
+                          )
+                      print(
+                          f"canonical Branch Cleanup {run_id} succeeded "
+                          f"(dry_run={str(dry_run).lower()}) for {branches}"
+                      )
+                      return run_id
+                  time.sleep(3)
+              raise SystemExit(f"timed out waiting for Branch Cleanup {run_id}")
+
+          if main_sha() != expected_main:
+              raise SystemExit("main is not the independently verified v0.1.4 source")
+
+          permanent = [
+              "release/v0.1.4-automatic-proof",
+              "fix/v0.1.4-proof-promotion-dispatch",
+              "fix/v0.1.4-bot-proof-promotion",
+          ]
+          for branch in permanent:
+              prs = open_prs_for(branch)
+              if prs:
+                  raise SystemExit(f"refusing cleanup: {branch} still heads open PR(s)")
+
+          observer = open_prs_for("ops/v0.1.4-observe")
+          if [int(pr["number"]) for pr in observer] != [observer_pr]:
+              raise SystemExit("observer branch open-PR state does not match PR #43")
+          helper = open_prs_for(helper_branch)
+          if [int(pr["number"]) for pr in helper] != [helper_pr]:
+              raise SystemExit("helper branch open-PR state does not match this cleanup PR")
+
+          dry_run_id = dispatch_cleanup(permanent, dry_run=True)
+
+          api("PATCH", f"/pulls/{observer_pr}", {"state": "closed"})
+          api("PATCH", f"/pulls/{helper_pr}", {"state": "closed"})
+
+          for branch in ("ops/v0.1.4-observe", helper_branch):
+              if open_prs_for(branch):
+                  raise SystemExit(f"{branch} still heads an open PR after closeout")
+
+          all_targets = permanent + ["ops/v0.1.4-observe", helper_branch]
+          destructive_id = dispatch_cleanup(all_targets, dry_run=False)
+
+          api(
+              "POST",
+              f"/issues/{observer_pr}/comments",
+              {
+                  "body": (
+                      "v0.1.4 canonical cleanup completed. "
+                      f"Dry-run Branch Cleanup: `{dry_run_id}`; destructive Branch Cleanup: `{destructive_id}`. "
+                      f"Deletion was bound to verified main `{expected_main}` and delegated to the permanent cleanup engine."
+                  )
+              },
+          )
+          print(json.dumps({"dry_run": dry_run_id, "destructive": destructive_id}, sort_keys=True))
+          PY
