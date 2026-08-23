@@ -26,3 +26,35 @@ jobs:
       container_enabled: false
       custom_enabled: true
       custom_script: .prodkit/workflows/ci-custom.sh
+
+  apply-v013:
+    name: apply v0.1.3 candidate
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'release/v0.1.3-verification-dispatch' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: release/v0.1.3-verification-dispatch
+          fetch-depth: 0
+      - name: Apply and validate v0.1.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply_v013.py
+          git diff --check
+          python3 scripts/test_contracts_current.py
+          python3 scripts/test_release_metadata_compat.py
+          python3 scripts/test_release_lifecycle.py
+          python3 scripts/test_cancelled_diagnostics.py
+      - name: Commit validated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "release: v0.1.3"
+          git push origin HEAD:release/v0.1.3-verification-dispatch
