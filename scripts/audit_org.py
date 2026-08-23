@@ -210,7 +210,6 @@ def main():
                     "types: [completed]",
                     "branches: [main]",
                     "github.event.workflow_run.event == 'push'",
-                    "github.event.workflow_run.conclusion == 'success'",
                     "actions: write",
                     "source_sha: ${{ github.event.workflow_run.head_sha }}",
                     'runner_json: \'"ubuntu-latest"\'',
@@ -224,6 +223,10 @@ def main():
                 if workflow_events(text) != {"workflow_run"}:
                     errors.append(
                         "release-proof-dispatch.yml must expose workflow_run as its only trigger"
+                    )
+                if "workflow_run.conclusion == 'success'" in text:
+                    errors.append(
+                        "release-proof-dispatch.yml must let the central dispatcher evaluate gate conclusions"
                     )
                 if "contents: write" in text:
                     errors.append(
