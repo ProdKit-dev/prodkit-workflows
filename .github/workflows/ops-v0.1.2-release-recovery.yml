@@ -1,22 +1,26 @@
 name: Recover v0.1.2 Publication
 
 on:
-  push:
-    branches: [ops/v0.1.2-release-recovery]
+  pull_request:
+    branches: [main]
+    types: [synchronize]
 
 permissions:
   actions: write
   contents: read
+  pull-requests: write
 
 jobs:
   recover:
     name: verify, publish, verify, cleanup
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'ops/v0.1.2-release-recovery' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       SOURCE_SHA: 14088abf4f4a2f431f58b27c69d74f1b38d05252
       RELEASE_TAG: v0.1.2
       RELEASE_VERSION: 0.1.2
+      RECOVERY_PR: ${{ github.event.pull_request.number }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Recover only the proven exact-main release
@@ -39,6 +43,7 @@ jobs:
           source_sha = os.environ["SOURCE_SHA"]
           tag = os.environ["RELEASE_TAG"]
           version = os.environ["RELEASE_VERSION"]
+          recovery_pr = int(os.environ["RECOVERY_PR"])
           root = f"https://api.github.com/repos/{repo}"
           headers = {
               "Authorization": f"Bearer {token}",
@@ -171,6 +176,13 @@ jobs:
 
           if current_main() != source_sha:
               raise SystemExit("main moved before cleanup authorization")
+
+          pr = api("GET", f"/pulls/{recovery_pr}")
+          if pr.get("head", {}).get("ref") != "ops/v0.1.2-release-recovery" or pr.get("base", {}).get("ref") != "main":
+              raise SystemExit("recovery PR identity changed")
+          if pr.get("state") == "open":
+              api("PATCH", f"/pulls/{recovery_pr}", {"state": "closed"})
+              print(f"closed disposable recovery PR #{recovery_pr}")
 
           branches = [
               "release/v0.1.2-gated-cleanup",
