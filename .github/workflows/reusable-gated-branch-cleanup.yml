@@ -195,6 +195,7 @@ jobs:
           if not isinstance(gates, list) or not gates or len(gates) > 20:
               raise SystemExit("required_gates_json must be a non-empty array of at most 20 gates")
           normalized_gates = []
+          seen_names = set()
           seen_paths = set()
           for item in gates:
               if not isinstance(item, dict) or set(item) != {"name", "path"}:
@@ -207,8 +208,11 @@ jobs:
                   r"\.github/workflows/[A-Za-z0-9._/-]+\.ya?ml", path
               ):
                   raise SystemExit(f"invalid gate workflow path: {path!r}")
+              if name in seen_names:
+                  raise SystemExit(f"duplicate gate name: {name!r}")
               if ".." in path or "//" in path or path in seen_paths:
                   raise SystemExit(f"unsafe or duplicate gate workflow path: {path!r}")
+              seen_names.add(name)
               seen_paths.add(path)
               normalized_gates.append({"name": name, "path": path})
 
@@ -337,7 +341,7 @@ jobs:
               "ref": default_branch,
               "inputs": {
                   "branches_json": json.dumps(branches, separators=(",", ":")),
-                  "dry_run": "false",
+                  "dry_run": False,
                   "expected_default_sha": expected,
               },
           }
