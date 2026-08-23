@@ -1,0 +1,563 @@
+name: Apply v0.1.3 Verification Dispatch Fix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'release/v0.1.3-verification-dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: release/v0.1.3-verification-dispatch
+          fetch-depth: 0
+
+      - name: Apply v0.1.3 lifecycle correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import textwrap
+
+          root = Path.cwd()
+
+          def replace(path: str, old: str, new: str) -> None:
+              p = root / path
+              text = p.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"missing replacement anchor in {path}: {old[:100]!r}")
+              p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          dispatcher = r'''name: Reusable Release Verification Dispatch
+
+          on:
+            workflow_call:
+              inputs:
+                source_sha:
+                  description: Exact source SHA published by the parent Release workflow.
+                  required: true
+                  type: string
+                version:
+                  description: Canonical SemVer without the v prefix.
+                  required: true
+                  type: string
+                release_run_id:
+                  description: Exact parent Release workflow run ID.
+                  required: true
+                  type: string
+                runner_json:
+                  description: JSON value accepted by runs-on.
+                  required: false
+                  type: string
+                  default: '"ubuntu-latest"'
+                verification_workflow_file:
+                  description: Dispatch-only verification workflow filename.
+                  required: false
+                  type: string
+                  default: release-verification.yml
+
+          permissions:
+            actions: write
+            contents: read
+
+          concurrency:
+            group: release-verification-dispatch-${{ inputs.source_sha }}
+            cancel-in-progress: false
+
+          jobs:
+            dispatch:
+              name: Dispatch independent verification
+              runs-on: ${{ fromJSON(inputs.runner_json) }}
+              timeout-minutes: 5
+              env:
+                SOURCE_SHA: ${{ inputs.source_sha }}
+                VERSION: ${{ inputs.version }}
+                RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+                VERIFICATION_WORKFLOW_FILE: ${{ inputs.verification_workflow_file }}
+                GH_TOKEN: ${{ github.token }}
+              steps:
+                - name: Validate publication handoff and dispatch verification
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    python3 - <<'PY'
+                    from __future__ import annotations
+
+                    import base64
+                    import json
+                    import os
+                    import re
+                    import urllib.error
+                    import urllib.parse
+                    import urllib.request
+                    from typing import Any
+
+                    repo = os.environ["GITHUB_REPOSITORY"]
+                    token = os.environ["GH_TOKEN"]
+                    source_sha = os.environ["SOURCE_SHA"]
+                    version = os.environ["VERSION"]
+                    release_run_id = os.environ["RELEASE_RUN_ID"]
+                    verification_file = os.environ["VERIFICATION_WORKFLOW_FILE"]
+                    root = f"https://api.github.com/repos/{repo}"
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "User-Agent": "prodkit-workflows-release-verification-dispatch",
+                    }
+                    semver = re.compile(
+                        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                        r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
+                    )
+
+                    class ApiError(RuntimeError):
+                        def __init__(self, status: int, body: str) -> None:
+                            super().__init__(f"GitHub API {status}: {body}")
+                            self.status = status
+                            self.body = body
+
+                    def api(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+                        raw = None if payload is None else json.dumps(payload).encode()
+                        request = urllib.request.Request(
+                            root + path,
+                            data=raw,
+                            method=method,
+                            headers={**headers, **({"Content-Type": "application/json"} if raw else {})},
+                        )
+                        try:
+                            with urllib.request.urlopen(request, timeout=120) as response:
+                                body = response.read()
+                                return None if not body else json.loads(body)
+                        except urllib.error.HTTPError as exc:
+                            body = exc.read().decode(errors="replace")
+                            raise ApiError(exc.code, body) from exc
+
+                    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+                        raise SystemExit("source_sha must be an exact lowercase 40-character commit SHA")
+                    if not semver.fullmatch(version):
+                        raise SystemExit("version must be canonical SemVer")
+                    if not re.fullmatch(r"[1-9][0-9]*", release_run_id):
+                        raise SystemExit("release_run_id must be a positive integer string")
+                    if not re.fullmatch(r"[A-Za-z0-9._-]+\.ya?ml", verification_file):
+                        raise SystemExit("verification_workflow_file must be a workflow filename")
+
+                    run = api("GET", f"/actions/runs/{release_run_id}")
+                    if run.get("path") != ".github/workflows/release.yml":
+                        raise SystemExit("release_run_id does not identify the canonical Release workflow")
+                    if run.get("event") != "workflow_dispatch" or run.get("head_sha") != source_sha:
+                        raise SystemExit("release_run_id is not bound to the exact dispatched source")
+                    if run.get("status") == "completed" and run.get("conclusion") != "success":
+                        raise SystemExit("parent Release workflow already completed unsuccessfully")
+                    if run.get("status") not in {"in_progress", "completed"}:
+                        raise SystemExit(f"parent Release workflow is not in a dispatchable state: {run.get('status')}")
+
+                    tag = f"v{version}"
+                    ref = api("GET", f"/git/ref/tags/{urllib.parse.quote(tag, safe='')}")
+                    obj = ref["object"]
+                    seen: set[str] = set()
+                    while obj.get("type") == "tag":
+                        sha = str(obj["sha"])
+                        if sha in seen:
+                            raise SystemExit("tag object cycle detected")
+                        seen.add(sha)
+                        obj = api("GET", f"/git/tags/{sha}")["object"]
+                    if obj.get("type") != "commit" or obj.get("sha") != source_sha:
+                        raise SystemExit(f"immutable tag {tag} does not resolve to {source_sha}")
+
+                    release = api("GET", f"/releases/tags/{urllib.parse.quote(tag, safe='')}")
+                    if release.get("draft") is not False or str(release.get("target_commitish")) != source_sha:
+                        raise SystemExit("published Release is not bound to the exact source")
+
+                    quoted = urllib.parse.quote(f".github/workflows/{verification_file}", safe="/")
+                    caller = api("GET", f"/contents/{quoted}?ref={urllib.parse.quote(source_sha, safe='')}")
+                    if caller.get("type") != "file" or caller.get("encoding") != "base64":
+                        raise SystemExit("verification caller is not a source file")
+                    text = base64.b64decode(caller["content"]).decode()
+                    if "workflow_dispatch:" not in text or "workflow_run:" in text:
+                        raise SystemExit("verification caller must be workflow_dispatch-only")
+                    if "source_sha: ${{ github.sha }}" not in text:
+                        raise SystemExit("verification caller must derive source_sha from dispatched ref")
+
+                    query = urllib.parse.urlencode({"head_sha": source_sha, "event": "workflow_dispatch", "per_page": 100})
+                    runs = list(api("GET", f"/actions/runs?{query}").get("workflow_runs", []))
+                    expected_path = f".github/workflows/{verification_file}"
+                    verification_runs = [
+                        item for item in runs
+                        if item.get("path") == expected_path
+                        and item.get("head_sha") == source_sha
+                        and item.get("event") == "workflow_dispatch"
+                    ]
+                    successful = [
+                        item for item in verification_runs
+                        if item.get("status") == "completed" and item.get("conclusion") == "success"
+                    ]
+                    if successful:
+                        selected = max(successful, key=lambda item: int(item["id"]))
+                        print(f"successful exact-source verification already exists: {selected.get('html_url')}")
+                        raise SystemExit(0)
+                    active = [
+                        item for item in verification_runs
+                        if item.get("status") in {"queued", "in_progress", "pending"}
+                    ]
+                    if active:
+                        selected = max(active, key=lambda item: int(item["id"]))
+                        print(f"active exact-source verification already exists: {selected.get('html_url')}")
+                        raise SystemExit(0)
+
+                    api(
+                        "POST",
+                        f"/actions/workflows/{urllib.parse.quote(verification_file, safe='')}/dispatches",
+                        {"ref": tag, "inputs": {"release_run_id": release_run_id}},
+                    )
+                    print(
+                        f"dispatched {verification_file} at immutable {tag} for {source_sha}; "
+                        "parent Release exits without waiting"
+                    )
+                    PY
+          '''
+          (root / ".github/workflows/reusable-release-verification-dispatch.yml").write_text(
+              textwrap.dedent(dispatcher), encoding="utf-8"
+          )
+
+          release_self = r'''name: Release
+
+          on:
+            workflow_dispatch:
+              inputs:
+                version:
+                  description: SemVer without v prefix
+                  required: true
+                  type: string
+                prerelease:
+                  description: Mark as prerelease
+                  required: true
+                  type: boolean
+                  default: false
+
+          permissions:
+            contents: write
+            actions: read
+            id-token: write
+            attestations: write
+            artifact-metadata: write
+
+          jobs:
+            release:
+              name: release
+              uses: ./.github/workflows/reusable-release.yml
+              with:
+                version: ${{ inputs.version }}
+                target_sha: ${{ github.sha }}
+                prerelease: ${{ inputs.prerelease }}
+                runner_json: '"ubuntu-latest"'
+                proof_workflow_file: .github/workflows/trusted-release-proof.yml
+                reuse_proof_payload: true
+                environment: release
+
+            verification-dispatch:
+              name: dispatch verification
+              needs: release
+              permissions:
+                actions: write
+                contents: read
+              uses: ./.github/workflows/reusable-release-verification-dispatch.yml
+              with:
+                source_sha: ${{ github.sha }}
+                version: ${{ inputs.version }}
+                release_run_id: ${{ github.run_id }}
+                runner_json: '"ubuntu-latest"'
+                verification_workflow_file: release-verification.yml
+          '''
+          (root / ".github/workflows/release.yml").write_text(textwrap.dedent(release_self), encoding="utf-8")
+
+          verification_self = r'''name: Release Verification
+
+          run-name: Release Verification — ${{ github.sha }}
+
+          on:
+            workflow_dispatch:
+              inputs:
+                release_run_id:
+                  description: Exact parent Release run ID; leave blank only for manual re-verification after Release completed
+                  required: false
+                  type: string
+                  default: ""
+
+          permissions:
+            actions: read
+            contents: read
+
+          jobs:
+            verification:
+              name: verification
+              uses: ./.github/workflows/reusable-release-verification.yml
+              with:
+                source_sha: ${{ github.sha }}
+                release_run_id: ${{ inputs.release_run_id }}
+                runner_json: '"ubuntu-latest"'
+                manifest_path: .prodkit/release.json
+                release_workflow_file: release.yml
+          '''
+          (root / ".github/workflows/release-verification.yml").write_text(
+              textwrap.dedent(verification_self), encoding="utf-8"
+          )
+
+          release_template = r'''name: Release
+
+          on:
+            workflow_dispatch:
+              inputs:
+                version:
+                  description: SemVer without v prefix
+                  required: true
+                  type: string
+                prerelease:
+                  required: true
+                  type: boolean
+                  default: false
+
+          permissions:
+            contents: write
+            actions: read
+            id-token: write
+            attestations: write
+            artifact-metadata: write
+
+          jobs:
+            release:
+              name: release
+              uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+              with:
+                version: ${{ inputs.version }}
+                target_sha: ${{ github.sha }}
+                prerelease: ${{ inputs.prerelease }}
+                runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+                required_workflows_json: '["CI","Security"]'
+                proof_workflow_file: .github/workflows/trusted-release-proof.yml
+                reuse_proof_payload: true
+                python_enabled: true
+                python_version: "3.12"
+                uv_version: "0.10.0"
+                node_enabled: true
+                node_version: "24"
+                pnpm_version: "11.21.0"
+                environment: release
+
+            verification-dispatch:
+              name: dispatch verification
+              needs: release
+              permissions:
+                actions: write
+                contents: read
+              uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+              with:
+                source_sha: ${{ github.sha }}
+                version: ${{ inputs.version }}
+                release_run_id: ${{ github.run_id }}
+                runner_json: '"ubuntu-latest"'
+                verification_workflow_file: release-verification.yml
+          '''
+          (root / "templates/caller/release.yml").write_text(textwrap.dedent(release_template), encoding="utf-8")
+
+          verification_template = r'''name: Release Verification
+
+          run-name: Release Verification — ${{ github.sha }}
+
+          on:
+            workflow_dispatch:
+              inputs:
+                release_run_id:
+                  description: Exact parent Release run ID; leave blank only for manual re-verification after Release completed
+                  required: false
+                  type: string
+                  default: ""
+
+          permissions:
+            actions: read
+            contents: read
+
+          jobs:
+            verification:
+              name: verification
+              uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-verification.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+              with:
+                source_sha: ${{ github.sha }}
+                release_run_id: ${{ inputs.release_run_id }}
+                runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+                manifest_path: .prodkit/release.json
+                release_workflow_file: release.yml
+          '''
+          (root / "templates/caller/release-verification.yml").write_text(
+              textwrap.dedent(verification_template), encoding="utf-8"
+          )
+
+          verifier_path = root / ".github/workflows/reusable-release-verification.yml"
+          verifier = verifier_path.read_text(encoding="utf-8")
+          replace(
+              ".github/workflows/reusable-release-verification.yml",
+              "      release_workflow_file:\n        required: false\n        type: string\n        default: release.yml\n",
+              "      release_workflow_file:\n        required: false\n        type: string\n        default: release.yml\n      release_run_id:\n        description: Optional exact parent Release run ID for automatic verification handoff.\n        required: false\n        type: string\n        default: \"\"\n",
+          )
+          replace(
+              ".github/workflows/reusable-release-verification.yml",
+              "      RELEASE_WORKFLOW_FILE: ${{ inputs.release_workflow_file }}\n      GH_TOKEN: ${{ github.token }}\n",
+              "      RELEASE_WORKFLOW_FILE: ${{ inputs.release_workflow_file }}\n      RELEASE_RUN_ID: ${{ inputs.release_run_id }}\n      GH_TOKEN: ${{ github.token }}\n",
+          )
+          old_block = '''          query = urllib.parse.urlencode(\n              {"head_sha": source_sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}\n          )\n          runs = list(api(f"/actions/runs?{query}").get("workflow_runs", []))\n          expected_path = f".github/workflows/{release_workflow_file}"\n          successful_release_runs = [\n              run\n              for run in runs\n              if run.get("path") == expected_path\n              and run.get("head_sha") == source_sha\n              and run.get("event") == "workflow_dispatch"\n              and run.get("status") == "completed"\n              and run.get("conclusion") == "success"\n          ]\n          if not successful_release_runs:\n              raise SystemExit("missing successful exact-source Release workflow run")\n'''
+          new_block = '''          expected_path = f".github/workflows/{release_workflow_file}"\n          release_run_id = os.environ.get("RELEASE_RUN_ID", "").strip()\n          if release_run_id:\n              if not re.fullmatch(r"[1-9][0-9]*", release_run_id):\n                  raise SystemExit("release_run_id must be a positive integer string")\n              parent = api(f"/actions/runs/{release_run_id}")\n              if parent.get("path") != expected_path:\n                  raise SystemExit("release_run_id does not identify the canonical Release workflow")\n              if parent.get("head_sha") != source_sha or parent.get("event") != "workflow_dispatch":\n                  raise SystemExit("release_run_id is not bound to the exact dispatched source")\n              if parent.get("status") == "completed" and parent.get("conclusion") != "success":\n                  raise SystemExit("parent Release workflow completed unsuccessfully")\n              if parent.get("status") not in {"in_progress", "completed"}:\n                  raise SystemExit(f"parent Release workflow has unexpected status: {parent.get('status')}")\n              successful_release_runs = [parent]\n          else:\n              query = urllib.parse.urlencode(\n                  {"head_sha": source_sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}\n              )\n              runs = list(api(f"/actions/runs?{query}").get("workflow_runs", []))\n              successful_release_runs = [\n                  run\n                  for run in runs\n                  if run.get("path") == expected_path\n                  and run.get("head_sha") == source_sha\n                  and run.get("event") == "workflow_dispatch"\n                  and run.get("status") == "completed"\n                  and run.get("conclusion") == "success"\n              ]\n              if not successful_release_runs:\n                  raise SystemExit("missing successful exact-source Release workflow run")\n'''
+          replace(".github/workflows/reusable-release-verification.yml", old_block, new_block)
+
+          # Organization audit: Release must own bounded verification dispatch; verification is dispatch-only/read-only.
+          audit_path = root / "scripts/audit_org.py"
+          audit = audit_path.read_text(encoding="utf-8")
+          old_release_audit = '''            if filename == "release.yml":\n                if "target_sha: ${{ github.sha }}" not in text:\n                    errors.append("release.yml must publish the dispatched current-main SHA")\n                if "proof_workflow_file: .github/workflows/trusted-release-proof.yml" not in text:\n                    errors.append("release.yml must delegate Trusted Release Proof authorization centrally")\n                if "proof-gate:" in text or "urllib.request" in text:\n                    errors.append("release.yml must not duplicate central proof-gate implementation")\n                for pattern in direct_release_patterns:\n'''
+          new_release_audit = '''            if filename == "release.yml":\n                if "target_sha: ${{ github.sha }}" not in text:\n                    errors.append("release.yml must publish the dispatched current-main SHA")\n                if "proof_workflow_file: .github/workflows/trusted-release-proof.yml" not in text:\n                    errors.append("release.yml must delegate Trusted Release Proof authorization centrally")\n                dispatcher = f"{args.workflows_repository}/.github/workflows/reusable-release-verification-dispatch.yml@{args.required_sha}"\n                for fragment in (\n                    dispatcher,\n                    "verification-dispatch:",\n                    "needs: release",\n                    "actions: write",\n                    "source_sha: ${{ github.sha }}",\n                    "release_run_id: ${{ github.run_id }}",\n                    "verification_workflow_file: release-verification.yml",\n                ):\n                    if fragment not in text:\n                        errors.append(f"release.yml missing independent verification dispatch contract: {fragment}")\n                if "proof-gate:" in text or "urllib.request" in text:\n                    errors.append("release.yml must not duplicate central proof-gate implementation")\n                for pattern in direct_release_patterns:\n'''
+          if old_release_audit not in audit:
+              raise SystemExit("audit release anchor missing")
+          audit = audit.replace(old_release_audit, new_release_audit, 1)
+          old_verification_audit = '''            if filename == "release-verification.yml":\n                if "workflow_run:" not in text or 'workflows: ["Release"]' not in text:\n                    errors.append("release-verification.yml must run after Release completion")\n                if "actions: write" in text or "contents: write" in text:\n                    errors.append("release-verification.yml must remain read-only")\n'''
+          new_verification_audit = '''            if filename == "release-verification.yml":\n                if workflow_events(text) != {"workflow_dispatch"}:\n                    errors.append("release-verification.yml must be workflow_dispatch-only")\n                if "source_sha: ${{ github.sha }}" not in text:\n                    errors.append("release-verification.yml must derive source from the dispatched immutable ref")\n                if "release_run_id: ${{ inputs.release_run_id }}" not in text:\n                    errors.append("release-verification.yml must forward the parent Release run identity")\n                if "actions: write" in text or "contents: write" in text:\n                    errors.append("release-verification.yml must remain read-only")\n'''
+          if old_verification_audit not in audit:
+              raise SystemExit("audit verification anchor missing")
+          audit_path.write_text(audit.replace(old_verification_audit, new_verification_audit, 1), encoding="utf-8")
+
+          # Current contract inventory + topology assertions.
+          contracts_path = root / "scripts/test_contracts_current.py"
+          contracts = contracts_path.read_text(encoding="utf-8")
+          contracts = contracts.replace(
+              '            "reusable-release-verification.yml",\n',
+              '            "reusable-release-verification.yml",\n            "reusable-release-verification-dispatch.yml",\n',
+              1,
+          )
+          anchor = '''    require(\n        ".github/workflows/release-verification.yml",\n        "uses: ./.github/workflows/reusable-release-verification.yml",\n        "control-plane release verification",\n    )\n'''
+          addition = anchor + '''    require(\n        ".github/workflows/release.yml",\n        "uses: ./.github/workflows/reusable-release-verification-dispatch.yml",\n        "control-plane verification dispatch",\n    )\n    require(\n        "templates/caller/release.yml",\n        "reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",\n        "generated verification dispatch",\n    )\n    require(\n        "templates/caller/release-verification.yml",\n        "workflow_dispatch:",\n        "generated verification dispatch boundary",\n    )\n    reject(\n        "templates/caller/release-verification.yml",\n        "workflow_run:",\n        "generated verification must not depend on workflow_run chaining",\n    )\n    require(\n        "templates/caller/release-verification.yml",\n        "source_sha: ${{ github.sha }}",\n        "generated immutable-ref verification source",\n    )\n    dispatcher = ".github/workflows/reusable-release-verification-dispatch.yml"\n    for fragment in (\n        "workflow_call:",\n        "actions: write",\n        "release_run_id:",\n        "verification_workflow_file:",\n        "immutable tag",\n        "verification caller must be workflow_dispatch-only",\n        '"ref": tag',\n        '"release_run_id": release_run_id',\n        "/dispatches",\n        "successful exact-source verification already exists",\n        "active exact-source verification already exists",\n    ):\n        require(dispatcher, fragment, "reusable verification dispatcher")\n    reject(dispatcher, "time.sleep(", "verification dispatcher must not wait for child")\n'''
+          if anchor not in contracts:
+              raise SystemExit("test_contracts_current verification anchor missing")
+          contracts_path.write_text(contracts.replace(anchor, addition, 1), encoding="utf-8")
+
+          lifecycle_test_path = root / "scripts/test_release_lifecycle.py"
+          lifecycle_test = lifecycle_test_path.read_text(encoding="utf-8")
+          lifecycle_test = lifecycle_test.replace(
+              '    verification = text(".github/workflows/reusable-release-verification.yml")\n',
+              '    verification = text(".github/workflows/reusable-release-verification.yml")\n    verification_dispatch = text(".github/workflows/reusable-release-verification-dispatch.yml")\n',
+              1,
+          )
+          old_template_test = '''    for needle in (\n        "workflow_run:",\n        'workflows: ["Release"]',\n        "reusable-release-verification.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",\n        "workflow_run.head_sha",\n    ):\n        require(verification_template, needle, "release verification caller template")\n'''
+          new_template_test = '''    for needle in (\n        "workflow_dispatch:",\n        "reusable-release-verification.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",\n        "source_sha: ${{ github.sha }}",\n        "release_run_id: ${{ inputs.release_run_id }}",\n    ):\n        require(verification_template, needle, "release verification caller template")\n    reject(verification_template, "workflow_run:", "release verification caller chain-depth safety")\n\n    for needle in (\n        "actions: write",\n        "release_run_id:",\n        "verification_workflow_file:",\n        '"ref": tag',\n        '"release_run_id": release_run_id',\n        "/dispatches",\n        "verification caller must be workflow_dispatch-only",\n    ):\n        require(verification_dispatch, needle, "reusable verification dispatch")\n    reject(verification_dispatch, "time.sleep(", "reusable verification dispatch")\n    for needle in (\n        "verification-dispatch:",\n        "needs: release",\n        "reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",\n        "release_run_id: ${{ github.run_id }}",\n    ):\n        require(release_template, needle, "release verification dispatch handoff")\n'''
+          if old_template_test not in lifecycle_test:
+              raise SystemExit("release lifecycle verification template anchor missing")
+          lifecycle_test = lifecycle_test.replace(old_template_test, new_template_test, 1)
+          lifecycle_test = lifecycle_test.replace(
+              '    require(lifecycle, "proof-completion boundary", "lifecycle documentation")\n',
+              '    require(lifecycle, "proof-completion boundary", "lifecycle documentation")\n    require(lifecycle, "verification-dispatch boundary", "lifecycle documentation")\n    require(lifecycle, "workflow_dispatch", "lifecycle verification dispatch")\n',
+              1,
+          )
+          lifecycle_test = lifecycle_test.replace(
+              '    require(contracts, "proof-produced", "consumer contracts")\n',
+              '    require(contracts, "proof-produced", "consumer contracts")\n    require(contracts, "verification-dispatch boundary", "consumer contracts")\n',
+              1,
+          )
+          lifecycle_test = lifecycle_test.replace(
+              '    require(readme, "proof-produced", "README")\n',
+              '    require(readme, "proof-produced", "README")\n    require(readme, "verification-dispatch boundary", "README")\n',
+              1,
+          )
+          lifecycle_test_path.write_text(lifecycle_test, encoding="utf-8")
+
+          # Normative docs: correct the trigger topology and document why.
+          lifecycle_path = root / "docs/LIFECYCLE.md"
+          lifecycle = lifecycle_path.read_text(encoding="utf-8")
+          lifecycle = lifecycle.replace(
+              '| Verification | `workflow_run` after Release | Independently verify immutable publication | exact tag/source/metadata/assets/checksums |',
+              '| Verification | explicit `workflow_dispatch` from the completed publication job graph | Independently verify immutable publication without exceeding GitHub workflow-chain depth | exact tag/source/metadata/assets/checksums |',
+          )
+          lifecycle = lifecycle.replace(
+              '7. `workflow_run` starts independent verification only after Release has completed.',
+              '7. Release finishes publication, then a short GitHub-hosted verification-dispatch job validates the immutable tag/source handoff and dispatches `Release Verification` at that immutable tag without waiting for the child. This **verification-dispatch boundary** avoids GitHub’s `workflow_run` chain-depth limit.',
+          )
+          lifecycle = lifecycle.replace(
+              'The generated `Release Verification` caller listens for completion of the repository `Release` workflow and invokes `reusable-release-verification.yml` only for successful workflow-dispatch publication runs.\n\nVerification is read-only.',
+              'The generated `Release Verification` caller is `workflow_dispatch` only. The parent Release workflow invokes `reusable-release-verification-dispatch.yml` after its publication job succeeds; the dispatcher validates the exact parent Release run, immutable `vX.Y.Z` tag and published target, then dispatches verification on that tag and exits immediately. The verification caller derives `source_sha` from `${{ github.sha }}` at the immutable tag and forwards only the parent Release run ID for provenance binding.\n\nThis **verification-dispatch boundary** deliberately uses `workflow_dispatch` rather than another `workflow_run` hop, preventing GitHub’s chained-`workflow_run` depth limit from suppressing verification. Verification is read-only.',
+          )
+          lifecycle = lifecycle.replace(
+              'Because verification begins only after Release completes, it cannot hold the runner needed by publication.',
+              'Because verification is dispatched only after the reusable publication job succeeds, and the dispatcher itself is short and non-blocking, it cannot hold the runner needed by publication or wait on the verification child.',
+          )
+          lifecycle_path.write_text(lifecycle, encoding="utf-8")
+
+          contracts_doc = root / "docs/CONTRACTS.md"
+          contracts_text = contracts_doc.read_text(encoding="utf-8")
+          contracts_text = contracts_text.replace(
+              '- `reusable-release-verification.yml`;\n',
+              '- `reusable-release-verification.yml`;\n- `reusable-release-verification-dispatch.yml`;\n',
+              1,
+          )
+          contracts_text = contracts_text.replace(
+              '5. **Publication** — Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.\n6. **Verification** — `Release Verification` independently checks the immutable published transaction.',
+              '5. **Publication** — Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.\n6. **Verification dispatch** — after publication succeeds, Release calls the bounded verification dispatcher, which validates the exact parent run and immutable tag then triggers `Release Verification` with `workflow_dispatch` on that tag and exits. This **verification-dispatch boundary** avoids GitHub chained-`workflow_run` depth suppression.\n7. **Verification** — dispatch-only, read-only `Release Verification` independently checks the immutable published transaction.',
+          )
+          contracts_doc.write_text(contracts_text, encoding="utf-8")
+
+          readme_path = root / "README.md"
+          readme = readme_path.read_text(encoding="utf-8")
+          marker = "## v0.1.3 verification-dispatch boundary\n"
+          if marker not in readme:
+              readme += '''\n## v0.1.3 verification-dispatch boundary\n\nRelease verification no longer depends on a fourth chained `workflow_run`. After publication succeeds, Release calls a short reusable verification dispatcher that validates the exact parent Release run and immutable `vX.Y.Z` source, dispatches read-only `Release Verification` with `workflow_dispatch` on that tag, and exits without waiting. This preserves independent verification while avoiding GitHub workflow-chain depth suppression.\n'''
+          readme_path.write_text(readme, encoding="utf-8")
+
+          adoption_path = root / "docs/ADOPTION.md"
+          adoption = adoption_path.read_text(encoding="utf-8")
+          marker = "## Verification dispatch\n"
+          if marker not in adoption:
+              adoption += '''\n## Verification dispatch\n\nAfter `Release` publishes successfully, do not manually start a normal verification run. The Release workflow automatically dispatches `Release Verification` on the immutable release tag through the central verification-dispatch boundary. Manual `Release Verification` dispatch is recovery-only; select the immutable `vX.Y.Z` tag and leave `release_run_id` empty after the parent Release has completed.\n'''
+          adoption_path.write_text(adoption, encoding="utf-8")
+
+          # Version and release notes.
+          (root / "VERSION").write_text("0.1.3\n", encoding="utf-8")
+          changelog_path = root / "CHANGELOG.md"
+          changelog = changelog_path.read_text(encoding="utf-8")
+          heading = "## [0.1.3] - 2026-08-23\n"
+          if heading not in changelog:
+              insertion = '''## [0.1.3] - 2026-08-23\n\n- Fix automatic post-publication verification so it cannot be suppressed by GitHub's chained `workflow_run` depth limit.\n- Add `reusable-release-verification-dispatch.yml`; Release invokes it only after publication succeeds, and it validates the exact parent Release run, immutable tag/source identity, and dispatch-only verification caller before triggering verification.\n- Make generated `Release Verification` callers `workflow_dispatch` only, derive the source from `${{ github.sha }}` on the immutable tag, and remain read-only.\n- Bind automatic verification to the exact parent Release run ID while preserving input-free source identity and manual recovery after a completed Release.\n- Keep verification dispatch non-blocking and GitHub-hosted so it never waits while occupying a trusted product runner.\n- Update bootstrap contracts, organization audit, lifecycle tests, and consumer documentation to enforce the verification-dispatch boundary.\n- Keep the immutable `v0.1.2` release unchanged; v0.1.3 is the patch-level lifecycle correction discovered during v0.1.2 closure.\n\n'''
+              changelog = changelog.replace("## [0.1.2] - 2026-08-23\n", insertion + "## [0.1.2] - 2026-08-23\n", 1)
+              changelog_path.write_text(changelog, encoding="utf-8")
+
+          notes = '''# ProdKit Workflows v0.1.3\n\n`v0.1.3` corrects the post-publication verification trigger topology discovered while closing v0.1.2. GitHub limits chained `workflow_run` depth, so a Proof → Promotion → Release → Verification sequence can suppress the final verifier even when publication succeeds.\n\n## Outcome\n\nRelease verification is now explicitly dispatched on the immutable release tag after publication succeeds. The verifier remains a separate, read-only workflow and continues to validate exact source, tag, metadata, assets and checksums.\n\n## Verification-dispatch boundary\n\nRelease gains a short `verification-dispatch` job after the reusable publisher. It passes the exact `${{ github.sha }}`, SemVer and `${{ github.run_id }}` to `reusable-release-verification-dispatch.yml`. The dispatcher verifies the parent run identity, immutable `vX.Y.Z` tag and published target, validates that the repository verification caller is `workflow_dispatch` only and source-bound to `${{ github.sha }}`, avoids duplicate active/successful verification runs, then dispatches verification on the immutable tag and exits without waiting.\n\n`Release Verification` accepts no manually copied source SHA. Automatic dispatch forwards only the parent Release run ID. Manual recovery may leave that run ID empty after Release has completed; the verifier then requires an already-completed successful exact-source Release run.\n\n## Compatibility\n\nConsumers pinned to v0.1.2 keep their immutable behavior. Consumers adopting v0.1.3 should repin the complete generated workflow family to the exact v0.1.3 release commit SHA so Release and Release Verification move together.\n'''
+          (root / "docs/V0.1.3.md").write_text(notes, encoding="utf-8")
+
+          # The release lifecycle regression should recognize the new parent-run handoff in the reusable verifier.
+          replace(
+              "scripts/test_release_lifecycle.py",
+              '    for forbidden in ("actions: write", "contents: write", "time.sleep(", "while time.time()"):\n        reject(verification, forbidden, "reusable release verification")\n',
+              '    for forbidden in ("actions: write", "contents: write", "time.sleep(", "while time.time()"):\n        reject(verification, forbidden, "reusable release verification")\n    require(verification, "release_run_id:", "reusable release parent-run handoff")\n    require(verification, "parent Release workflow", "reusable release parent-run validation")\n',
+          )
+
+          # Remove this one-shot operator before testing/committing so exact workflow inventory remains clean.
+          (root / ".github/workflows/ops-apply-v0.1.3.yml").unlink()
+          PY
+
+          git diff --check
+          python3 scripts/test_contracts_current.py
+          python3 scripts/test_release_metadata_compat.py
+          python3 scripts/test_release_lifecycle.py
+          python3 scripts/test_cancelled_diagnostics.py
+
+      - name: Commit v0.1.3 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "release: v0.1.3"
+          git push origin HEAD:release/v0.1.3-verification-dispatch
