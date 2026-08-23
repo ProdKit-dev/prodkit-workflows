@@ -1,0 +1,26 @@
+name: Release Proof Dispatch
+
+on:
+  workflow_run:
+    workflows: ["CI", "Security"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    name: dispatch proof
+    if: ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      actions: write
+      contents: read
+    uses: ./.github/workflows/reusable-release-proof-dispatch.yml
+    with:
+      source_sha: ${{ github.event.workflow_run.head_sha }}
+      runner_json: '"ubuntu-latest"'
+      manifest_path: .prodkit/release.json
+      required_workflows_json: '["CI","Security"]'
+      proof_workflow_file: trusted-release-proof.yml
