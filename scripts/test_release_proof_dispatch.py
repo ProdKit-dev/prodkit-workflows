@@ -34,6 +34,7 @@ def main() -> None:
         "release-proof-dispatch-${{ inputs.source_sha }}",
         "canonical version",
         "release proof dispatch deferred until exact-main gates complete",
+        "exact-main release gates completed unsuccessfully",
         "required_workflows_json",
         "proof_workflow_file",
         "/dispatches",
@@ -55,13 +56,13 @@ def main() -> None:
             "types: [completed]",
             "branches: [main]",
             "github.event.workflow_run.event == 'push'",
-            "github.event.workflow_run.conclusion == 'success'",
             "source_sha: ${{ github.event.workflow_run.head_sha }}",
             'runner_json: \'"ubuntu-latest"\'',
             "required_workflows_json: '[\"CI\",\"Security\"]'",
             "proof_workflow_file: trusted-release-proof.yml",
         ):
             require(body, needle, label)
+        reject(body, "workflow_run.conclusion == 'success'", label + " must delegate gate outcomes")
         reject(body, "contents: write", label)
 
     require(
@@ -82,6 +83,7 @@ def main() -> None:
     require(bootstrap, 'src / "caller/release-proof-dispatch.yml"', "consumer bootstrap")
     require(audit, '"release-proof-dispatch.yml": "reusable-release-proof-dispatch.yml"', "organization audit")
     require(audit, 'if filename == "release-proof-dispatch.yml":', "organization audit")
+    require(audit, "must let the central dispatcher evaluate gate conclusions", "organization audit")
 
     print("automatic release proof dispatch contract passed")
 
