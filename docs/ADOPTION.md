@@ -2,7 +2,7 @@
 
 ## 1. Validate the control plane
 
-Protect `ProdKit-dev/prodkit-workflows/main` and require its CI/Security checks. Maintain a protected `release` environment for publication workflows that use it.
+Protect `ProdKit-dev/prodkit-workflows/main` and require its CI/Security checks. Maintain a protected `release` environment for publication workflows that use it. Configure required reviewers on that environment when human publication approval is required.
 
 ## 2. Pin one reviewed revision
 
@@ -19,7 +19,9 @@ python3 scripts/bootstrap_consumer.py \
 
 Edit repository-owned adapters and disable unused capabilities. Keep release metadata in `.prodkit/release.json` aligned with the repository’s actual version sources and release notes.
 
-The generated integration includes both `Branch Cleanup` and `Post-Gate Branch Cleanup`. The destructive caller remains explicitly dispatched and pinned to the same central revision; consumers must not replace it with repository-local branch-deletion code. The post-gate caller is a dormant authorization layer and cannot delete refs directly.
+The generated integration includes `Release Proof Dispatch`, `Trusted Release Proof`, `Release Promotion`, `Release`, `Release Verification`, `Branch Cleanup`, and `Post-Gate Branch Cleanup`. Keep the workflow family pinned to one reviewed central revision; partial release-lifecycle migration is unsupported.
+
+The destructive cleanup caller remains explicitly dispatched and pinned to the same central revision; consumers must not replace it with repository-local branch-deletion code. The post-gate caller is a dormant authorization layer and cannot delete refs directly.
 
 ## 4. Configure the runner directly
 
@@ -37,7 +39,7 @@ Fork-originated CI/Security pull requests remain forced to `ubuntu-latest`; do n
 
 There is no automatic runner failover in the normative architecture. If a runner is unavailable, repair it or deliberately change the direct runner target for subsequent runs. See `docs/RUNNERS.md`.
 
-Branch Cleanup defaults to GitHub-hosted `ubuntu-latest`. Post-Gate Branch Cleanup also prefers GitHub-hosted execution but honors `PRODKIT_RUNNER_JSON` for installations where trusted private-repository control-plane jobs must use a self-hosted runner.
+Branch Cleanup defaults to GitHub-hosted `ubuntu-latest`. Post-Gate Branch Cleanup also prefers GitHub-hosted execution but honors `PRODKIT_RUNNER_JSON` for installations where trusted private-repository control-plane jobs must use a self-hosted runner. Release Proof Dispatch is intentionally GitHub-hosted because it is a short non-mutating control-plane dispatcher and must not occupy the trusted product runner while starting proof.
 
 ## 5. Stabilize required checks
 
@@ -64,16 +66,22 @@ Preserve historical tags/releases. Do not rewrite old release commits.
 
 For a new release:
 
-1. merge the release candidate to `main`;
-2. wait for exact-main CI and Security to pass;
-3. dispatch `Trusted Release Proof` on `main` — the proof source is automatically `${{ github.sha }}`;
-4. after proof succeeds, wait for the `Release Promotion` workflow triggered from that completed proof; it derives the semantic version from the exact source and dispatches `Release` automatically;
-5. wait for the automatically dispatched `Release` run, which uses `${{ github.sha }}` as the target and verifies exact-SHA CI, Security, and proof evidence before any tag/publication transaction;
-6. wait for `Release Verification` after successful publication to independently verify the immutable release transaction.
+1. prepare the release candidate so all manifest version sources expose the intended new SemVer, its release notes exist, and the changelog contains the matching heading;
+2. merge the release candidate to `main`;
+3. wait for exact-main CI and Security to pass;
+4. `Release Proof Dispatch` automatically recognizes the unpublished canonical version, verifies both exact-SHA permanent gates, validates the dispatch-only proof caller, and dispatches `Trusted Release Proof` on `main`;
+5. after proof succeeds, wait for the `Release Promotion` workflow triggered from that completed proof; it derives the semantic version from the exact source and dispatches `Release` automatically;
+6. if the repository protects the `release` environment with required reviewers, approve publication there after reviewing the already-completed exact-source evidence;
+7. wait for the automatically dispatched `Release` run, which uses `${{ github.sha }}` as the target and verifies exact-SHA CI, Security, and proof evidence before any tag/publication transaction;
+8. wait for `Release Verification` after successful publication to independently verify the immutable release transaction.
+
+Do not manually dispatch `Trusted Release Proof` during the normal v0.1.4+ lifecycle. Manual proof dispatch remains a recovery mechanism only after confirming the automatic dispatcher did not already create an active or successful exact-source proof run.
 
 Do not manually dispatch `Release` after a successful proof when `Release Promotion` is active. A manual Release dispatch is an operator recovery action only after confirming automatic promotion did not already create an active or completed exact-source Release run; otherwise it creates redundant production execution and ambiguous approval/failure history.
 
 Operators should not manually copy commit SHAs between these workflows.
+
+The automatic proof dispatcher evaluates exact-main gate completions only. Ordinary main merges do not become releases when the canonical version is already represented by its immutable tag. A new unpublished canonical version is the release-intent signal; a conflicting existing tag fails closed.
 
 ## 8. Clean obsolete branches safely
 
@@ -123,10 +131,12 @@ The post-gate authorizer has `actions: write` so it can dispatch Branch Cleanup,
 
 Configure `ORG_AUDIT_TOKEN` with read access to the target repositories and run Organization Audit. The auditor rejects:
 
-- missing lifecycle, manual cleanup, or post-gate cleanup callers;
+- missing lifecycle, automatic proof-dispatch, manual cleanup, or post-gate cleanup callers;
 - floating central refs;
 - obsolete central SHAs;
 - retired runner-controller usage;
+- proof-dispatch callers that are not `workflow_run` only, are not exact-main/gate-bound, use a mutable/floating central reference, or obtain `contents: write`;
+- Trusted Release Proof callers that are not `workflow_dispatch` only;
 - non-dispatch destructive cleanup callers;
 - post-gate cleanup callers that are not `workflow_run` only, do not use exact-SHA handoff, or obtain `contents: write`;
 - the retired nested Release pipeline as the generated release contract;
