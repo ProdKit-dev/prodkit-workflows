@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | Pull request | `pull_request` | Correctness/security feedback before merge | `CI`, `Security`, optional `CodeQL` |
 | Main branch | `push` to `main` | Certify the actual merge SHA | successful exact-SHA `CI` and `Security` |
-| Release proof authorization | `workflow_run` after successful main gates | Detect an unpublished canonical version and dispatch proof only after all required exact-SHA gates are green | bounded `Release Proof Dispatch` evidence |
+| Release proof authorization | `workflow_run` after main gate completion | Detect an unpublished canonical version and dispatch proof only after all required exact-SHA gates are green | bounded `Release Proof Dispatch` evidence |
 | Release candidate | automatically dispatched `workflow_dispatch` | Verify permanent gates, run release-only acceptance, build the promotable payload once | completed successful `Trusted Release Proof` + proof-produced payload receipt |
 | Promotion | `workflow_run` after completed successful `Trusted Release Proof` | Dispatch the proven version without racing proof completion or waiting for publication | bounded idempotent Release dispatch |
 | Publication | promoted `workflow_dispatch` | Import/seal the proof-produced payload, optionally attest, and publish behind the `release` environment | immutable tag + Release + checksums/SBOM; optional GitHub provenance |
@@ -34,7 +34,7 @@ The lifecycle must remain correct with only one trusted self-hosted runner. A jo
 Cross-workflow sequencing therefore uses completion and dispatch boundaries:
 
 1. exact-main CI/Security/optional CodeQL complete independently;
-2. `Release Proof Dispatch` observes successful CI/Security completion, rechecks current-main identity and all required exact-SHA gates, recognizes release intent only when the manifest's canonical version is not already tagged, dispatches `Trusted Release Proof`, and exits without waiting;
+2. `Release Proof Dispatch` observes CI/Security completion, rechecks current-main identity and all required exact-SHA gates, recognizes release intent only when the manifest's canonical version is not already tagged, dispatches `Trusted Release Proof`, and exits without waiting;
 3. `Trusted Release Proof` acquires the trusted runner, performs release-specific acceptance, builds the proof-produced payload once, completes successfully, and releases the runner;
 4. the separate `Release Promotion` caller starts from that completed proof workflow's `workflow_run` event, derives the release version from the exact proof `head_sha`, dispatches Release idempotently, and exits;
 5. Release acquires a runner and advances through short sequential release jobs; the protected `release` environment is the human publication approval boundary when required reviewers are configured;
@@ -61,11 +61,11 @@ Compatibility and scanning dimensions execute as steps, and the final aggregate 
 
 ## Automatic release proof authorization
 
-`Release Proof Dispatch` is a permanent `workflow_run` control-plane caller listening for successful `CI` and `Security` completions on `main`. It does not itself certify or publish anything.
+`Release Proof Dispatch` is a permanent `workflow_run` control-plane caller listening for `CI` and `Security` completions on `main`. It does not itself certify or publish anything.
 
 The reusable dispatcher requires the trigger SHA to still equal the current default-branch SHA. It derives one consistent SemVer from the version sources declared in `.prodkit/release.json`. A canonical version whose immutable tag already resolves to current main means there is no new release intent, so the run exits successfully without dispatching proof. If that canonical tag exists on another source, the dispatcher fails closed.
 
-The dispatcher then verifies every required exact-SHA push workflow. A required gate that is missing or still active causes a successful `deferred` outcome; the later successful gate completion provides another authorization event. A completed non-success gate fails closed. This means the first of CI/Security to finish never creates a false failed proof run, while the final successful gate can start proof immediately.
+The dispatcher then verifies every required exact-SHA push workflow. A required gate that is missing or still active causes a successful `deferred` outcome; the later gate completion provides another authorization event. A completed non-success gate fails closed. The caller deliberately forwards both successful and unsuccessful gate-completion events so failure evidence is preserved regardless of completion order. This means the first of CI/Security to finish never creates a false failed proof run, while the final successful gate can start proof immediately and a final failed gate records an explicit authorization failure.
 
 Before dispatch, the authorizer validates the repository `Trusted Release Proof` caller at the exact source. That caller must remain `workflow_dispatch` only and must certify `source_sha: ${{ github.sha }}`. Existing active or successful exact-source proof runs suppress duplicates. Current-main identity is checked again immediately before dispatch.
 
@@ -75,7 +75,7 @@ The dispatcher uses `actions: write` only to invoke the proof workflow and remai
 
 `Trusted Release Proof` remains `workflow_dispatch` only and certifies `${{ github.sha }}` from the branch/ref on which it is dispatched. In the normal v0.1.4+ lifecycle, `Release Proof Dispatch` performs that dispatch automatically on `main`; operators do not click **Run workflow** or paste a source SHA.
 
-Manual proof dispatch is recovery-only after verifying that no active or successful automatic exact-source proof exists.
+Manual proof dispatch is recovery-only after verifying that no active or successful automatic exact-source proof exists. Trusted Release Proof itself does not run on every pull-request commit, ordinary main push, or tag event; the automatic dispatcher starts it only when exact-main gates are green and the canonical version is unpublished.
 
 The reusable proof first verifies that the SHA is still current `main` and that permanent exact-SHA `CI` and `Security` push workflows already succeeded. It **does not rerun those matrices**. The repository-owned `.prodkit/workflows/release-proof.sh` is therefore reserved for genuinely release-specific acceptance not already represented by permanent CI/Security evidence.
 
