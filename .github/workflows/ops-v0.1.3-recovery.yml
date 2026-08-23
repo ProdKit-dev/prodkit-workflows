@@ -1,0 +1,207 @@
+name: v0.1.3 Recovery Finalizer
+
+on:
+  push:
+    branches: [ops/v0.1.3-finalize]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-clean:
+    name: verify publication and dispatch cleanup
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: 89eec1f6bcd4e45fb67c9fa99122ea6feba9d4bc
+      RELEASE_RUN_ID: "32611259997"
+    steps:
+      - name: Verify exact v0.1.3 publication and known failed tail
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          source = os.environ["SOURCE_SHA"]
+          release_run_id = int(os.environ["RELEASE_RUN_ID"])
+          root = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-v0.1.3-recovery",
+          }
+
+          def api(path: str, *, accept: str | None = None):
+              request = urllib.request.Request(
+                  root + path,
+                  headers={**headers, **({"Accept": accept} if accept else {})},
+              )
+              with urllib.request.urlopen(request, timeout=300) as response:
+                  raw = response.read()
+                  if accept == "application/octet-stream":
+                      return raw
+                  return None if not raw else json.loads(raw)
+
+          run = api(f"/actions/runs/{release_run_id}")
+          if run.get("path") != ".github/workflows/release.yml":
+              raise SystemExit("recovery run is not canonical Release")
+          if run.get("event") != "workflow_dispatch" or run.get("head_sha") != source:
+              raise SystemExit("recovery run is not bound to exact v0.1.3 source")
+          if run.get("status") != "completed" or run.get("conclusion") != "failure":
+              raise SystemExit("expected the known completed-failure v0.1.3 Release run")
+
+          jobs = api(f"/actions/runs/{release_run_id}/jobs?per_page=100").get("jobs", [])
+          states = {str(job.get("name")): str(job.get("conclusion")) for job in jobs}
+          required_success = {
+              "release / Validate release request",
+              "release / Build and seal release payload",
+              "release / Publish sealed release payload",
+          }
+          missing = sorted(name for name in required_success if states.get(name) != "success")
+          if missing:
+              raise SystemExit(f"release publication stages were not all successful: {missing}")
+          failed = sorted(name for name, conclusion in states.items() if conclusion == "failure")
+          if failed != ["dispatch verification / Dispatch independent verification"]:
+              raise SystemExit(f"unexpected failed Release jobs: {failed}")
+
+          tag = "v0.1.3"
+          ref = api(f"/git/ref/tags/{tag}")
+          obj = ref["object"]
+          seen: set[str] = set()
+          while obj.get("type") == "tag":
+              sha = str(obj["sha"])
+              if sha in seen:
+                  raise SystemExit("tag object cycle detected")
+              seen.add(sha)
+              obj = api(f"/git/tags/{sha}")["object"]
+          if obj.get("type") != "commit" or obj.get("sha") != source:
+              raise SystemExit("immutable v0.1.3 tag drifted from exact source")
+
+          release = api(f"/releases/tags/{tag}")
+          if release.get("draft") is not False or release.get("prerelease") is not False:
+              raise SystemExit("v0.1.3 GitHub Release publication state is invalid")
+          if str(release.get("target_commitish")) != source:
+              raise SystemExit("v0.1.3 Release target is not exact source")
+
+          assets = {str(asset["name"]): asset for asset in release.get("assets", [])}
+          sums_asset = assets.get("SHA256SUMS")
+          if sums_asset is None:
+              raise SystemExit("v0.1.3 Release is missing SHA256SUMS")
+          sums = api(str(sums_asset["url"]).removeprefix(root), accept="application/octet-stream")
+          expected: dict[str, str] = {}
+          for line in sums.decode().splitlines():
+              if not line.strip():
+                  continue
+              digest, name = line.split(None, 1)
+              name = name.lstrip("*")
+              if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  raise SystemExit(f"invalid SHA256SUMS digest for {name}")
+              if name in expected:
+                  raise SystemExit(f"duplicate SHA256SUMS entry: {name}")
+              expected[name] = digest
+          if set(assets) != set(expected) | {"SHA256SUMS"}:
+              raise SystemExit("published asset set does not match SHA256SUMS")
+          for name, digest in expected.items():
+              asset = assets[name]
+              api_digest = asset.get("digest")
+              if api_digest:
+                  if api_digest != f"sha256:{digest}":
+                      raise SystemExit(f"GitHub asset digest mismatch: {name}")
+              else:
+                  raw = api(str(asset["url"]).removeprefix(root), accept="application/octet-stream")
+                  if hashlib.sha256(raw).hexdigest() != digest:
+                      raise SystemExit(f"published checksum mismatch: {name}")
+
+          print(json.dumps({
+              "status": "verified-known-v0.1.3-tail",
+              "source_sha": source,
+              "release_run_id": release_run_id,
+              "asset_count": len(assets),
+              "failed_job": failed[0],
+          }, sort_keys=True))
+          PY
+
+      - name: Close disposable recovery PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/pulls/40",
+              data=json.dumps({"state": "closed"}).encode(),
+              method="PATCH",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+                  "User-Agent": "prodkit-workflows-v0.1.3-recovery",
+              },
+          )
+          with urllib.request.urlopen(req) as response:
+              if response.status != 200:
+                  raise SystemExit(f"unexpected PR close status: {response.status}")
+          print("closed disposable PR #40")
+          PY
+
+      - name: Dispatch canonical exact-SHA cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          source = os.environ["SOURCE_SHA"]
+          payload = {
+              "ref": "main",
+              "inputs": {
+                  "branches_json": json.dumps([
+                      "release/v0.1.3-verification-dispatch",
+                      "ops/v0.1.3-finalize",
+                  ]),
+                  "expected_default_sha": source,
+                  "dry_run": "false",
+              },
+          }
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/actions/workflows/branch-cleanup.yml/dispatches",
+              data=json.dumps(payload).encode(),
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+                  "User-Agent": "prodkit-workflows-v0.1.3-recovery",
+              },
+          )
+          with urllib.request.urlopen(req) as response:
+              if response.status != 204:
+                  raise SystemExit(f"unexpected cleanup dispatch status: {response.status}")
+          print("canonical cleanup dispatched")
+          PY
