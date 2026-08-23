@@ -24,6 +24,7 @@ def main() -> None:
     promote = text(".github/workflows/reusable-release-promote.yml")
     reusable_proof = text(".github/workflows/reusable-release-proof.yml")
     verification = text(".github/workflows/reusable-release-verification.yml")
+    verification_dispatch = text(".github/workflows/reusable-release-verification-dispatch.yml")
     reusable_release = text(".github/workflows/reusable-release.yml")
     compatibility_release = text(".github/workflows/reusable-release-pipeline.yml")
     proof_template = text("templates/caller/trusted-release-proof.yml")
@@ -64,6 +65,8 @@ def main() -> None:
         require(verification, needle, "reusable release verification")
     for forbidden in ("actions: write", "contents: write", "time.sleep(", "while time.time()"):
         reject(verification, forbidden, "reusable release verification")
+    require(verification, "release_run_id:", "reusable release parent-run handoff")
+    require(verification, "parent Release workflow", "reusable release parent-run validation")
 
     # Proof consumes permanent exact-SHA evidence instead of rerunning CI/Security,
     # then produces the repository-owned promotable payload exactly once.
@@ -121,12 +124,32 @@ def main() -> None:
     )
 
     for needle in (
-        "workflow_run:",
-        'workflows: ["Release"]',
+        "workflow_dispatch:",
         "reusable-release-verification.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "workflow_run.head_sha",
+        "source_sha: ${{ github.sha }}",
+        "release_run_id: ${{ inputs.release_run_id }}",
     ):
         require(verification_template, needle, "release verification caller template")
+    reject(verification_template, "workflow_run:", "release verification caller chain-depth safety")
+
+    for needle in (
+        "actions: write",
+        "release_run_id:",
+        "verification_workflow_file:",
+        '"ref": tag',
+        '"release_run_id": release_run_id',
+        "/dispatches",
+        "verification caller must be workflow_dispatch-only",
+    ):
+        require(verification_dispatch, needle, "reusable verification dispatch")
+    reject(verification_dispatch, "time.sleep(", "reusable verification dispatch")
+    for needle in (
+        "verification-dispatch:",
+        "needs: release",
+        "reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "release_run_id: ${{ github.run_id }}",
+    ):
+        require(release_template, needle, "release verification dispatch handoff")
 
     # Release authorization belongs to the central publisher, not copied Python
     # in every consumer caller.
@@ -264,12 +287,14 @@ def main() -> None:
         "lifecycle documentation",
     )
     require(lifecycle, "proof-completion boundary", "lifecycle documentation")
+    require(lifecycle, "verification-dispatch boundary", "lifecycle documentation")
     require(lifecycle, "Artifact Attestations are optional", "lifecycle documentation")
     require(lifecycle, "Re-run failed jobs", "lifecycle documentation")
     require(lifecycle, "proof-produced", "lifecycle documentation")
     require(contracts, "Artifact Attestations are capability-dependent", "consumer contracts")
     require(contracts, "sealed payload", "consumer contracts")
     require(contracts, "proof-produced", "consumer contracts")
+    require(contracts, "verification-dispatch boundary", "consumer contracts")
     require(
         security_model,
         "Artifact Attestations are an optional additional trust signal",
@@ -297,6 +322,7 @@ def main() -> None:
     )
     require(readme, "Re-run failed jobs", "README")
     require(readme, "proof-produced", "README")
+    require(readme, "verification-dispatch boundary", "README")
 
     print("release lifecycle contracts passed")
 

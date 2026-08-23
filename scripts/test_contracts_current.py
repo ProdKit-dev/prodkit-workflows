@@ -65,6 +65,7 @@ def main() -> None:
             "release-verification.yml",
             "reusable-release-promote.yml",
             "reusable-release-verification.yml",
+            "reusable-release-verification-dispatch.yml",
             "reusable-branch-cleanup.yml",
             "reusable-gated-branch-cleanup.yml",
         }
@@ -136,6 +137,47 @@ def main() -> None:
         "uses: ./.github/workflows/reusable-release-verification.yml",
         "control-plane release verification",
     )
+    require(
+        ".github/workflows/release.yml",
+        "uses: ./.github/workflows/reusable-release-verification-dispatch.yml",
+        "control-plane verification dispatch",
+    )
+    require(
+        "templates/caller/release.yml",
+        "reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "generated verification dispatch",
+    )
+    require(
+        "templates/caller/release-verification.yml",
+        "workflow_dispatch:",
+        "generated verification dispatch boundary",
+    )
+    reject(
+        "templates/caller/release-verification.yml",
+        "workflow_run:",
+        "generated verification must not depend on workflow_run chaining",
+    )
+    require(
+        "templates/caller/release-verification.yml",
+        "source_sha: ${{ github.sha }}",
+        "generated immutable-ref verification source",
+    )
+    dispatcher = ".github/workflows/reusable-release-verification-dispatch.yml"
+    for fragment in (
+        "workflow_call:",
+        "actions: write",
+        "release_run_id:",
+        "verification_workflow_file:",
+        "immutable tag",
+        "verification caller must be workflow_dispatch-only",
+        '"ref": tag',
+        '"release_run_id": release_run_id',
+        "/dispatches",
+        "successful exact-source verification already exists",
+        "active exact-source verification already exists",
+    ):
+        require(dispatcher, fragment, "reusable verification dispatcher")
+    reject(dispatcher, "time.sleep(", "verification dispatcher must not wait for child")
 
     cleanup = ".github/workflows/reusable-branch-cleanup.yml"
     for fragment in (

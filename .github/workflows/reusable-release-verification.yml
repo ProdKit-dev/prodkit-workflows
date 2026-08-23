@@ -19,6 +19,11 @@ on:
         required: false
         type: string
         default: release.yml
+      release_run_id:
+        description: Optional exact parent Release run ID for automatic verification handoff.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   actions: read
@@ -37,6 +42,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       MANIFEST_PATH: ${{ inputs.manifest_path }}
       RELEASE_WORKFLOW_FILE: ${{ inputs.release_workflow_file }}
+      RELEASE_RUN_ID: ${{ inputs.release_run_id }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Verify tag, metadata, assets, and checksums
@@ -185,22 +191,37 @@ jobs:
           if str(release.get("body") or "").rstrip("\n") != expected_body:
               raise SystemExit("GitHub Release body does not match canonical release notes")
 
-          query = urllib.parse.urlencode(
-              {"head_sha": source_sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}
-          )
-          runs = list(api(f"/actions/runs?{query}").get("workflow_runs", []))
           expected_path = f".github/workflows/{release_workflow_file}"
-          successful_release_runs = [
-              run
-              for run in runs
-              if run.get("path") == expected_path
-              and run.get("head_sha") == source_sha
-              and run.get("event") == "workflow_dispatch"
-              and run.get("status") == "completed"
-              and run.get("conclusion") == "success"
-          ]
-          if not successful_release_runs:
-              raise SystemExit("missing successful exact-source Release workflow run")
+          release_run_id = os.environ.get("RELEASE_RUN_ID", "").strip()
+          if release_run_id:
+              if not re.fullmatch(r"[1-9][0-9]*", release_run_id):
+                  raise SystemExit("release_run_id must be a positive integer string")
+              parent = api(f"/actions/runs/{release_run_id}")
+              if parent.get("path") != expected_path:
+                  raise SystemExit("release_run_id does not identify the canonical Release workflow")
+              if parent.get("head_sha") != source_sha or parent.get("event") != "workflow_dispatch":
+                  raise SystemExit("release_run_id is not bound to the exact dispatched source")
+              if parent.get("status") == "completed" and parent.get("conclusion") != "success":
+                  raise SystemExit("parent Release workflow completed unsuccessfully")
+              if parent.get("status") not in {"in_progress", "completed"}:
+                  raise SystemExit(f"parent Release workflow has unexpected status: {parent.get('status')}")
+              successful_release_runs = [parent]
+          else:
+              query = urllib.parse.urlencode(
+                  {"head_sha": source_sha, "event": "workflow_dispatch", "status": "completed", "per_page": 100}
+              )
+              runs = list(api(f"/actions/runs?{query}").get("workflow_runs", []))
+              successful_release_runs = [
+                  run
+                  for run in runs
+                  if run.get("path") == expected_path
+                  and run.get("head_sha") == source_sha
+                  and run.get("event") == "workflow_dispatch"
+                  and run.get("status") == "completed"
+                  and run.get("conclusion") == "success"
+              ]
+              if not successful_release_runs:
+                  raise SystemExit("missing successful exact-source Release workflow run")
 
           assets = {str(asset["name"]): asset for asset in release.get("assets", [])}
           sums_asset = assets.get("SHA256SUMS")

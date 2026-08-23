@@ -1,9 +1,15 @@
 name: Release Verification
 
+run-name: Release Verification — ${{ github.sha }}
+
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: Exact parent Release run ID; leave blank only for manual re-verification after Release completed
+        required: false
+        type: string
+        default: ""
 
 permissions:
   actions: read
@@ -12,10 +18,10 @@ permissions:
 jobs:
   verification:
     name: verification
-    if: ${{ github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion == 'success' }}
     uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-verification.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
     with:
-      source_sha: ${{ github.event.workflow_run.head_sha }}
+      source_sha: ${{ github.sha }}
+      release_run_id: ${{ inputs.release_run_id }}
       runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
       manifest_path: .prodkit/release.json
       release_workflow_file: release.yml

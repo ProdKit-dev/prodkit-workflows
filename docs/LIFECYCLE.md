@@ -13,7 +13,7 @@
 | Release candidate | explicit `workflow_dispatch` | Verify permanent gates, run release-only acceptance, build the promotable payload once | completed successful `Trusted Release Proof` + proof-produced payload receipt |
 | Promotion | `workflow_run` after completed successful `Trusted Release Proof` | Dispatch the proven version without racing proof completion or waiting for publication | bounded idempotent Release dispatch |
 | Publication | promoted `workflow_dispatch` | Import/seal the proof-produced payload, optionally attest, and publish | immutable tag + Release + checksums/SBOM; optional GitHub provenance |
-| Verification | `workflow_run` after Release | Independently verify immutable publication | exact tag/source/metadata/assets/checksums |
+| Verification | `workflow_dispatch` on immutable release tag | Independently verify immutable publication without chained-workflow suppression | exact tag/source/metadata/assets/checksums |
 | Metadata repair | canonical metadata push or explicit dispatch | Repair mutable Release presentation only | verified name/body repair with immutable state unchanged |
 
 ## Runner ownership
@@ -38,7 +38,7 @@ Cross-workflow sequencing therefore uses completion boundaries:
 4. `Trusted Release Proof` completes successfully and releases its runner;
 5. the separate `Release Promotion` caller starts from that completed workflow's `workflow_run` event, derives the release version from the exact proof `head_sha`, dispatches Release idempotently, and exits;
 6. Release acquires a runner and advances through short sequential release jobs;
-7. `workflow_run` starts independent verification only after Release has completed.
+7. Release finishes publication, then a short GitHub-hosted verification-dispatch job validates the immutable tag/source handoff and dispatches `Release Verification` at that immutable tag without waiting for the child. This **verification-dispatch boundary** avoids GitHub’s chained `workflow_run` depth limit.
 
 The **proof-completion boundary** is also required on hosted or multi-runner environments: publication authorization searches only completed successful proof runs, so dispatching Release from a job inside an in-progress proof workflow is a race and is forbidden.
 
@@ -110,11 +110,11 @@ Tag creation never reruns the proof and a product/release failure never switches
 
 ## Independent verification
 
-The generated `Release Verification` caller listens for completion of the repository `Release` workflow and invokes `reusable-release-verification.yml` only for successful workflow-dispatch publication runs.
+The generated `Release Verification` caller is `workflow_dispatch` only. The parent Release workflow invokes `reusable-release-verification-dispatch.yml` after publication succeeds; the dispatcher validates the exact parent Release run, immutable `vX.Y.Z` tag and published target, then dispatches verification on that tag and exits immediately. The verification caller derives `source_sha` from `${{ github.sha }}` at the immutable tag and forwards only the parent Release run ID for provenance binding.
 
-Verification is read-only. It derives the version, notes path, and expected Release name from the immutable source manifest; recursively resolves annotated/lightweight tags to the exact source SHA; verifies draft/prerelease/target metadata; requires canonical Release notes; requires the remote asset set to match `SHA256SUMS` exactly; and verifies GitHub asset digests or downloads/hashes assets when the API digest is unavailable.
+This **verification-dispatch boundary** avoids another chained `workflow_run` hop. Verification is read-only. It derives the version, notes path, and expected Release name from the immutable source manifest; recursively resolves annotated/lightweight tags to the exact source SHA; verifies draft/prerelease/target metadata; requires canonical Release notes; requires the remote asset set to match `SHA256SUMS` exactly; and verifies GitHub asset digests or downloads/hashes assets when the API digest is unavailable.
 
-Because verification begins only after Release completes, it cannot hold the runner needed by publication.
+Because verification is dispatched only after the reusable publication job succeeds, and the dispatcher itself is short and non-blocking, it cannot hold the runner needed by publication or wait on the verification child.
 
 ## Metadata repair
 
