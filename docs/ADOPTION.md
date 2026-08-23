@@ -147,3 +147,7 @@ Configure `ORG_AUDIT_TOKEN` with read access to the target repositories and run 
 ## Verification dispatch
 
 After `Release` publishes successfully, do not manually start the normal verification path. Release automatically dispatches `Release Verification` on the immutable release tag through the central verification-dispatch boundary. Manual `Release Verification` dispatch is recovery-only; select the immutable `vX.Y.Z` tag and leave `release_run_id` empty after the parent Release has completed.
+
+### Automatic proof promotion bridge
+
+v0.1.4 consumers install the complete generated `release-proof-dispatch.yml`. After exact-main CI/Security succeed, the caller dispatches `Trusted Release Proof` and a GitHub-hosted bounded bridge observes that exact proof to dispatch `Release Promotion`. Operators should not manually dispatch `Release` after proof success; the bridge exists specifically so automatic proof does not depend on a suppressed downstream `workflow_run` event.

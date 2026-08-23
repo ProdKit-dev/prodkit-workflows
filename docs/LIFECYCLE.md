@@ -145,3 +145,13 @@ It cannot move/create tags, rebuild or replace assets, change checksums, or chan
 Consumers adopting v0.1.4 should pin the complete generated workflow family to the exact v0.1.4 commit and include `release-proof-dispatch.yml`. Earlier immutable pins keep their historical manual-proof behavior.
 
 Quality is a release-presentation reference, not a runner-controller dependency.
+
+## GITHUB_TOKEN-safe proof-to-promotion bridge
+
+v0.1.4 does not rely exclusively on `workflow_run` after an automatically dispatched `Trusted Release Proof`. GitHub suppresses some workflow-created follow-on events when the repository `GITHUB_TOKEN` initiated the child workflow, so a successful proof may complete without materializing a downstream `workflow_run` promotion event.
+
+`Release Proof Dispatch` therefore has two central phases. The first remains short and non-blocking: it validates exact-main CI/Security evidence and dispatches the dispatch-only `Trusted Release Proof`. The second delegates to `reusable-release-proof-promotion-dispatch.yml`, which runs only on `ubuntu-latest`, waits within a bounded timeout for the exact-source proof run, continuously rechecks current-main identity, fails closed on proof failure, and explicitly dispatches `Release Promotion` with the exact source SHA and proof run ID.
+
+`Release Promotion` retains its `workflow_run` entry for externally/manual dispatched proofs and also accepts the bridge's explicit `workflow_dispatch` handoff. The central publisher still independently requires a completed successful exact-source Trusted Release Proof before publication, so the bridge adds delivery reliability without weakening release authorization.
+
+The bounded wait is intentionally hosted and must never be moved onto the single trusted product runner. The trusted runner remains free for proof and publication work.

@@ -23,6 +23,7 @@ def reject(haystack: str, needle: str, label: str) -> None:
 def main() -> None:
     promote = text(".github/workflows/reusable-release-promote.yml")
     reusable_proof = text(".github/workflows/reusable-release-proof.yml")
+    proof_promotion_bridge = text(".github/workflows/reusable-release-proof-promotion-dispatch.yml")
     verification = text(".github/workflows/reusable-release-verification.yml")
     verification_dispatch = text(".github/workflows/reusable-release-verification-dispatch.yml")
     reusable_release = text(".github/workflows/reusable-release.yml")
@@ -93,6 +94,24 @@ def main() -> None:
     ):
         reject(proof_template, forbidden, "trusted release proof caller template")
 
+    # Automatic proof is dispatched with the repository GITHUB_TOKEN, so the
+    # generated lifecycle must not depend exclusively on a downstream workflow_run.
+    # A GitHub-hosted bounded bridge observes the exact proof and explicitly dispatches
+    # Release Promotion after successful completion.
+    for needle in (
+        "actions: write",
+        "contents: read",
+        "release-proof-promotion-dispatch-",
+        "proof_timeout_seconds:",
+        "poll_seconds:",
+        "timed out waiting for exact-source Trusted Release Proof",
+        "promotion_workflow_file",
+        '"proof_run_id": str(selected_proof["id"])',
+        "time.sleep(poll_seconds)",
+    ):
+        require(proof_promotion_bridge, needle, "proof-to-promotion bridge")
+    reject(proof_promotion_bridge, "contents: write", "proof-to-promotion bridge")
+
     # Promotion must start only after the proof workflow itself is complete.
     for needle in (
         "workflow_run:",
@@ -103,6 +122,10 @@ def main() -> None:
         "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
         "workflow_run.head_sha",
         "actions: write",
+        "workflow_dispatch:",
+        "source_sha:",
+        "proof_run_id:",
+        "github.event_name == 'workflow_dispatch'",
     ):
         require(promotion_template, needle, "release promotion caller template")
     for forbidden in ("time.sleep(", "while time.time()", "wait_for_release"):

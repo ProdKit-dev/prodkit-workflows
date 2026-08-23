@@ -220,6 +220,14 @@ def main():
                     errors.append(
                         "release-proof-dispatch.yml must remain hosted, exact-main and gate-driven"
                     )
+                bridge = (
+                    f"{args.workflows_repository}/.github/workflows/"
+                    f"reusable-release-proof-promotion-dispatch.yml@{args.required_sha}"
+                )
+                if bridge not in text or "promotion_workflow_file: release-promotion.yml" not in text:
+                    errors.append(
+                        "release-proof-dispatch.yml missing the exact pinned proof-to-promotion bridge"
+                    )
                 if workflow_events(text) != {"workflow_run"}:
                     errors.append(
                         "release-proof-dispatch.yml must expose workflow_run as its only trigger"
@@ -254,6 +262,13 @@ def main():
                 if any(fragment not in text for fragment in required_fragments):
                     errors.append(
                         "release-promotion.yml must dispatch only after a completed successful proof"
+                    )
+                for fragment in ("workflow_dispatch:", "source_sha:", "proof_run_id:", "github.event_name == 'workflow_dispatch'"):
+                    if fragment not in text:
+                        errors.append(f"release-promotion.yml missing explicit proof bridge handoff: {fragment}")
+                if workflow_events(text) != {"workflow_run", "workflow_dispatch"}:
+                    errors.append(
+                        "release-promotion.yml must expose only workflow_run and workflow_dispatch"
                     )
                 for forbidden in ("time.sleep(", "while time.time()", "wait_for_release"):
                     if forbidden in text:

@@ -195,3 +195,5 @@ See `docs/CONTRACTS.md`, `docs/RUNNERS.md`, `docs/LIFECYCLE.md`, and `docs/ADOPT
 ## v0.1.3 verification-dispatch boundary
 
 Release verification no longer depends on a fourth chained `workflow_run`. After publication succeeds, Release calls a short reusable verification dispatcher that validates the exact parent Release run and immutable `vX.Y.Z` source, dispatches read-only `Release Verification` with `workflow_dispatch` on that tag, and exits without waiting. This preserves independent verification while avoiding GitHub workflow-chain depth suppression.
+
+**v0.1.4 proof-to-promotion reliability:** automatic proof dispatch is followed by a bounded GitHub-hosted exact-proof observer that explicitly dispatches `Release Promotion`. This avoids relying on a downstream `workflow_run` event that GitHub may suppress when the repository `GITHUB_TOKEN` dispatched the proof, while keeping `Trusted Release Proof` dispatch-only and publication independently proof-gated.
