@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      SOURCE_SHA: 1ed882908e5ff0fe6f61662ec924551137c60257
+      SOURCE_SHA: a0c292ee6a276a3f9b05470e58c4d5f3ed2130e7
     steps:
       - name: Enumerate exact-source workflow runs
         shell: bash
