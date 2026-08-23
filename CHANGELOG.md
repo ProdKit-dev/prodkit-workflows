@@ -4,6 +4,8 @@ All notable changes to this repository are documented here.
 
 ## [0.1.4] - 2026-08-23
 
+- Bridge automatically dispatched proof to Release Promotion with an exact-source, bounded GitHub-hosted observer so v0.1.4 does not depend on a suppressed `workflow_run` edge.
+
 - Add automatic release-intent detection after exact-main `CI`/`Security` completion without converting `Trusted Release Proof` away from its dispatch-only trust boundary.
 - Add `reusable-release-proof-dispatch.yml` and generated `Release Proof Dispatch` callers. They run from successful default-branch gate completions, require the trigger SHA to still be current `main`, derive one canonical SemVer from the release manifest, and proceed only while that version is unpublished.
 - Defer cleanly while another required exact-SHA gate is still queued/in progress, fail closed when a required gate has completed unsuccessfully, ignore stale-main completions, and avoid duplicate active/successful proof dispatches.

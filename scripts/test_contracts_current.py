@@ -82,6 +82,10 @@ def main() -> None:
         }
     )
     test_contracts.EXPECTED_SELF_ADAPTERS.add("release-proof.sh")
+    test_contracts.EXPECTED_GITHUB_WORKFLOWS.add("reusable-release-proof-promotion-dispatch.yml")
+    temporary_alignment = ROOT / ".github/workflows/v014-contract-align.yml"
+    if temporary_alignment.is_file():
+        test_contracts.EXPECTED_GITHUB_WORKFLOWS.add(temporary_alignment.name)
     test_contracts.main()
     test_cleanup_trigger_parser()
 
@@ -124,6 +128,16 @@ def main() -> None:
         ".github/workflows/release-proof-dispatch.yml",
         "uses: ./.github/workflows/reusable-release-proof-dispatch.yml",
         "control-plane automatic proof dispatch",
+    )
+    require(
+        ".github/workflows/release-proof-dispatch.yml",
+        "uses: ./.github/workflows/reusable-release-proof-promotion-dispatch.yml",
+        "control-plane proof-to-promotion bridge",
+    )
+    require(
+        "templates/caller/release-proof-dispatch.yml",
+        "reusable-release-proof-promotion-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "generated proof-to-promotion bridge pin",
     )
     require(
         ".github/workflows/trusted-release-proof.yml",

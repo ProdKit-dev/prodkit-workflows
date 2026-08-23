@@ -311,3 +311,7 @@ It also rejects floating references, retired runner-controller usage, non-dispat
 ## Compatibility policy
 
 Already-pinned consumers remain immutable and may continue using `reusable-runner-policy.yml` or `reusable-release-pipeline.yml` until deliberately migrated. The retained compatibility release pipeline delegates to the same central proof authorization and resumable publisher rather than maintaining a second implementation. Proof-payload reuse defaults off in that compatibility surface so historical proof adapters remain valid. New bootstrap output and current organization policy use the direct proof-once/promote-after-completion/publish-once architecture plus the dispatch-only Branch Cleanup engine and optional dormant exact-main Post-Gate Branch Cleanup authorizer.
+
+### Proof-to-promotion dispatch contract
+
+Automatic release intent requires both `reusable-release-proof-dispatch.yml` and `reusable-release-proof-promotion-dispatch.yml` pinned to the same immutable central SHA. The proof dispatcher remains non-blocking. The promotion bridge is GitHub-hosted, bounded, exact-source-bound, fail-closed on proof failure or main movement, and may only dispatch the separate `Release Promotion` caller. It has `actions: write` and `contents: read`; it cannot publish or mutate repository content.

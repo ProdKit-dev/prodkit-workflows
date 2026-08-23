@@ -1,0 +1,340 @@
+name: Reusable Release Proof Promotion Dispatch
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact default-branch SHA whose release proof must complete before promotion.
+        required: true
+        type: string
+      runner_json:
+        description: JSON value accepted by runs-on. This bridge must normally remain GitHub-hosted.
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      main_branch:
+        required: false
+        type: string
+        default: main
+      manifest_path:
+        required: false
+        type: string
+        default: .prodkit/release.json
+      required_workflows_json:
+        description: Exact permanent push-workflow names required before the proof/promotion bridge may proceed.
+        required: false
+        type: string
+        default: '["CI","Security"]'
+      proof_workflow_file:
+        description: Dispatch-only Trusted Release Proof workflow filename.
+        required: false
+        type: string
+        default: trusted-release-proof.yml
+      promotion_workflow_file:
+        description: Release Promotion workflow filename that accepts exact source/proof inputs.
+        required: false
+        type: string
+        default: release-promotion.yml
+      proof_timeout_seconds:
+        description: Maximum bounded wait for the exact proof run to complete on a GitHub-hosted runner.
+        required: false
+        type: number
+        default: 5400
+      poll_seconds:
+        description: Poll interval while waiting for the exact proof run.
+        required: false
+        type: number
+        default: 10
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: release-proof-promotion-dispatch-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    name: Bridge completed proof to promotion
+    runs-on: ${{ fromJSON(inputs.runner_json) }}
+    timeout-minutes: 95
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      MAIN_BRANCH: ${{ inputs.main_branch }}
+      MANIFEST_PATH: ${{ inputs.manifest_path }}
+      REQUIRED_WORKFLOWS_JSON: ${{ inputs.required_workflows_json }}
+      PROOF_WORKFLOW_FILE: ${{ inputs.proof_workflow_file }}
+      PROMOTION_WORKFLOW_FILE: ${{ inputs.promotion_workflow_file }}
+      PROOF_TIMEOUT_SECONDS: ${{ inputs.proof_timeout_seconds }}
+      POLL_SECONDS: ${{ inputs.poll_seconds }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for exact proof and dispatch promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import json
+          import os
+          import pathlib
+          import re
+          import time
+          import tomllib
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from typing import Any
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          source_sha = os.environ["SOURCE_SHA"]
+          main_branch = os.environ["MAIN_BRANCH"]
+          manifest_path = os.environ["MANIFEST_PATH"]
+          proof_file = os.environ["PROOF_WORKFLOW_FILE"]
+          promotion_file = os.environ["PROMOTION_WORKFLOW_FILE"]
+          required = json.loads(os.environ["REQUIRED_WORKFLOWS_JSON"])
+          proof_timeout = int(os.environ["PROOF_TIMEOUT_SECONDS"])
+          poll_seconds = int(os.environ["POLL_SECONDS"])
+          root = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-release-proof-promotion-dispatch",
+          }
+          semver = re.compile(
+              r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+              r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
+          )
+          active_states = {"queued", "in_progress", "pending", "waiting", "requested"}
+
+          class ApiError(RuntimeError):
+              def __init__(self, status: int, body: str) -> None:
+                  super().__init__(f"GitHub API {status}: {body}")
+                  self.status = status
+                  self.body = body
+
+          def api(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+              raw = None if payload is None else json.dumps(payload).encode()
+              request = urllib.request.Request(
+                  root + path,
+                  data=raw,
+                  method=method,
+                  headers={**headers, **({"Content-Type": "application/json"} if raw else {})},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=120) as response:
+                      body = response.read()
+                      return None if not body else json.loads(body)
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode(errors="replace")
+                  raise ApiError(exc.code, body) from exc
+
+          def current_main() -> str:
+              return str(
+                  api("GET", f"/git/ref/heads/{urllib.parse.quote(main_branch, safe='/')}")["object"]["sha"]
+              )
+
+          def source_bytes(path: str) -> bytes:
+              candidate = pathlib.PurePosixPath(path)
+              if candidate.is_absolute() or ".." in candidate.parts or str(candidate) in {"", "."}:
+                  raise SystemExit(f"unsafe repository path: {path!r}")
+              quoted = urllib.parse.quote(str(candidate), safe="/")
+              item = api("GET", f"/contents/{quoted}?ref={urllib.parse.quote(source_sha, safe='')}")
+              if item.get("type") != "file" or item.get("encoding") != "base64":
+                  raise SystemExit(f"source path is not a base64 file: {path}")
+              return base64.b64decode(item["content"])
+
+          def dotted(value: Any, selector: str) -> Any:
+              current = value
+              for part in selector.split("."):
+                  if not isinstance(current, dict) or part not in current:
+                      raise SystemExit(f"version selector {selector!r} is missing {part!r}")
+                  current = current[part]
+              return current
+
+          def resolve_tag(tag: str) -> str | None:
+              try:
+                  ref = api("GET", f"/git/ref/tags/{urllib.parse.quote(tag, safe='')}")
+              except ApiError as exc:
+                  if exc.status == 404:
+                      return None
+                  raise
+              obj = ref["object"]
+              seen: set[str] = set()
+              while obj.get("type") == "tag":
+                  sha = str(obj["sha"])
+                  if sha in seen:
+                      raise SystemExit("tag object cycle detected")
+                  seen.add(sha)
+                  obj = api("GET", f"/git/tags/{sha}")["object"]
+              if obj.get("type") != "commit":
+                  raise SystemExit("canonical tag does not resolve to a commit")
+              return str(obj["sha"])
+
+          if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+              raise SystemExit("source_sha must be an exact lowercase 40-character commit SHA")
+          if not re.fullmatch(r"[A-Za-z0-9._/-]+", main_branch) or ".." in main_branch:
+              raise SystemExit("invalid main_branch")
+          for value, label in ((proof_file, "proof_workflow_file"), (promotion_file, "promotion_workflow_file")):
+              if not re.fullmatch(r"[A-Za-z0-9._-]+\.ya?ml", value):
+                  raise SystemExit(f"{label} must be a workflow filename")
+          if not isinstance(required, list) or not required or not all(isinstance(x, str) and x for x in required):
+              raise SystemExit("required_workflows_json must be a non-empty JSON string array")
+          if len(set(required)) != len(required):
+              raise SystemExit("required_workflows_json must not contain duplicate workflow names")
+          if proof_timeout < 30 or proof_timeout > 5400:
+              raise SystemExit("proof_timeout_seconds must be between 30 and 5400")
+          if poll_seconds < 2 or poll_seconds > 60:
+              raise SystemExit("poll_seconds must be between 2 and 60")
+
+          main = current_main()
+          if main != source_sha:
+              print(f"stale proof/promotion bridge ignored: current {main_branch} is {main}, trigger was {source_sha}")
+              raise SystemExit(0)
+
+          manifest = json.loads(source_bytes(manifest_path))
+          if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+              raise SystemExit("release manifest schema_version must be 1")
+          version_block = manifest.get("version")
+          sources = version_block.get("sources") if isinstance(version_block, dict) else None
+          if not isinstance(sources, list) or not sources:
+              raise SystemExit("release manifest requires version.sources")
+          versions: list[str] = []
+          for index, source in enumerate(sources):
+              if not isinstance(source, dict):
+                  raise SystemExit(f"version.sources[{index}] must be an object")
+              typ = source.get("type")
+              path = source.get("path")
+              selector = source.get("selector")
+              if typ not in {"text", "json", "toml"} or not isinstance(path, str) or not path:
+                  raise SystemExit(f"invalid version source at index {index}")
+              raw = source_bytes(path)
+              if typ == "text":
+                  value: Any = raw.decode().strip()
+              elif typ == "json":
+                  value = dotted(json.loads(raw), selector or "version")
+              else:
+                  value = dotted(tomllib.loads(raw.decode()), selector or "project.version")
+              versions.append(str(value))
+          if len(set(versions)) != 1 or not semver.fullmatch(versions[0]):
+              raise SystemExit(f"release version sources disagree or are invalid: {versions}")
+          version = versions[0]
+          tag = f"v{version}"
+
+          resolved = resolve_tag(tag)
+          if resolved is not None:
+              if resolved != source_sha:
+                  raise SystemExit(f"canonical version {tag} already exists on another source")
+              print(f"{tag} is already published from exact source {source_sha}; no promotion dispatch required")
+              raise SystemExit(0)
+
+          query = urllib.parse.urlencode({"head_sha": source_sha, "event": "push", "per_page": 100})
+          gate_runs = list(api("GET", f"/actions/runs?{query}").get("workflow_runs", []))
+          deferred: list[str] = []
+          failed: list[str] = []
+          for name in required:
+              matches = [
+                  run for run in gate_runs
+                  if run.get("name") == name
+                  and run.get("head_sha") == source_sha
+                  and run.get("event") == "push"
+              ]
+              successful = [
+                  run for run in matches
+                  if run.get("status") == "completed" and run.get("conclusion") == "success"
+              ]
+              if successful:
+                  continue
+              active = [run for run in matches if run.get("status") in active_states]
+              if active or not matches:
+                  deferred.append(name)
+              else:
+                  failed.append(name)
+          if failed:
+              raise SystemExit("exact-main release gates completed unsuccessfully: " + ", ".join(failed))
+          if deferred:
+              print("proof/promotion bridge deferred until exact-main gates complete: " + ", ".join(deferred))
+              raise SystemExit(0)
+
+          proof_path = f".github/workflows/{proof_file}"
+          promotion_path = f".github/workflows/{promotion_file}"
+          promotion_text = source_bytes(promotion_path).decode()
+          if "workflow_dispatch:" not in promotion_text or "source_sha:" not in promotion_text:
+              raise SystemExit("Release Promotion caller must accept workflow_dispatch exact-source handoff")
+
+          deadline = time.monotonic() + proof_timeout
+          selected_proof: dict[str, Any] | None = None
+          while selected_proof is None:
+              if current_main() != source_sha:
+                  raise SystemExit("main moved while waiting for exact-source Trusted Release Proof")
+              proof_query = urllib.parse.urlencode(
+                  {"head_sha": source_sha, "event": "workflow_dispatch", "per_page": 100}
+              )
+              proof_runs = list(api("GET", f"/actions/runs?{proof_query}").get("workflow_runs", []))
+              exact = [
+                  run for run in proof_runs
+                  if run.get("path") == proof_path
+                  and run.get("head_sha") == source_sha
+                  and run.get("event") == "workflow_dispatch"
+              ]
+              if exact:
+                  latest = max(exact, key=lambda item: int(item["id"]))
+                  status = latest.get("status")
+                  conclusion = latest.get("conclusion")
+                  if status == "completed":
+                      if conclusion != "success":
+                          raise SystemExit(
+                              f"exact-source Trusted Release Proof {latest['id']} completed unsuccessfully: {conclusion}"
+                          )
+                      selected_proof = latest
+                      break
+                  if status not in active_states:
+                      raise SystemExit(f"unexpected Trusted Release Proof state: {status}")
+                  print(f"waiting for Trusted Release Proof {latest['id']}: {status}")
+              else:
+                  print("waiting for exact-source Trusted Release Proof run to materialize")
+              if time.monotonic() >= deadline:
+                  raise SystemExit("timed out waiting for exact-source Trusted Release Proof")
+              time.sleep(poll_seconds)
+
+          all_query = urllib.parse.urlencode({"head_sha": source_sha, "per_page": 100})
+          all_runs = list(api("GET", f"/actions/runs?{all_query}").get("workflow_runs", []))
+          promotions = [
+              run for run in all_runs
+              if run.get("path") == promotion_path
+              and run.get("head_sha") == source_sha
+          ]
+          active_promotions = [run for run in promotions if run.get("status") in active_states]
+          successful_promotions = [
+              run for run in promotions
+              if run.get("status") == "completed" and run.get("conclusion") == "success"
+          ]
+          if active_promotions or successful_promotions:
+              candidates = active_promotions + successful_promotions
+              selected = max(candidates, key=lambda item: int(item["id"]))
+              print(f"Release Promotion run {selected['id']} already exists for exact source; no duplicate dispatch")
+              raise SystemExit(0)
+
+          if current_main() != source_sha:
+              raise SystemExit("main moved immediately before Release Promotion dispatch")
+          api(
+              "POST",
+              f"/actions/workflows/{urllib.parse.quote(promotion_file, safe='')}/dispatches",
+              {
+                  "ref": main_branch,
+                  "inputs": {
+                      "source_sha": source_sha,
+                      "proof_run_id": str(selected_proof["id"]),
+                  },
+              },
+          )
+          print(
+              f"dispatched {promotion_file} for {tag} at exact source {source_sha} "
+              f"after successful proof run {selected_proof['id']}"
+          )
+          PY
