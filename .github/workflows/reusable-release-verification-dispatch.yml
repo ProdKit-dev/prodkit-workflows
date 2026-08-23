@@ -145,7 +145,8 @@ jobs:
           text = base64.b64decode(caller["content"]).decode()
           if "workflow_dispatch:" not in text or "workflow_run:" in text:
               raise SystemExit("verification caller must be workflow_dispatch-only")
-          if "source_sha: ${{ github.sha }}" not in text:
+          expected_source_contract = "source_sha: $" + "{{ github.sha }}"
+          if expected_source_contract not in text:
               raise SystemExit("verification caller must derive source_sha from dispatched ref")
 
           query = urllib.parse.urlencode(
