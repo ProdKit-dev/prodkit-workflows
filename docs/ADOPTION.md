@@ -133,3 +133,7 @@ Configure `ORG_AUDIT_TOKEN` with read access to the target repositories and run 
 - local publication implementations in consumer `release.yml`.
 
 `reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain available only for consumers already pinned to historical revisions; do not generate new integrations from them.
+
+## Verification dispatch
+
+After `Release` publishes successfully, do not manually start the normal verification path. Release automatically dispatches `Release Verification` on the immutable release tag through the central verification-dispatch boundary. Manual `Release Verification` dispatch is recovery-only; select the immutable `vX.Y.Z` tag and leave `release_run_id` empty after the parent Release has completed.

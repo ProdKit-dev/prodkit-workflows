@@ -235,6 +235,18 @@ def main():
                     errors.append("release.yml must publish the dispatched current-main SHA")
                 if "proof_workflow_file: .github/workflows/trusted-release-proof.yml" not in text:
                     errors.append("release.yml must delegate Trusted Release Proof authorization centrally")
+                dispatcher = f"{args.workflows_repository}/.github/workflows/reusable-release-verification-dispatch.yml@{args.required_sha}"
+                for fragment in (
+                    dispatcher,
+                    "verification-dispatch:",
+                    "needs: release",
+                    "actions: write",
+                    "source_sha: ${{ github.sha }}",
+                    "release_run_id: ${{ github.run_id }}",
+                    "verification_workflow_file: release-verification.yml",
+                ):
+                    if fragment not in text:
+                        errors.append(f"release.yml missing independent verification dispatch contract: {fragment}")
                 if "proof-gate:" in text or "urllib.request" in text:
                     errors.append("release.yml must not duplicate central proof-gate implementation")
                 for pattern in direct_release_patterns:
@@ -244,8 +256,12 @@ def main():
                         )
 
             if filename == "release-verification.yml":
-                if "workflow_run:" not in text or 'workflows: ["Release"]' not in text:
-                    errors.append("release-verification.yml must run after Release completion")
+                if workflow_events(text) != {"workflow_dispatch"}:
+                    errors.append("release-verification.yml must be workflow_dispatch-only")
+                if "source_sha: ${{ github.sha }}" not in text:
+                    errors.append("release-verification.yml must derive source from the dispatched immutable ref")
+                if "release_run_id: ${{ inputs.release_run_id }}" not in text:
+                    errors.append("release-verification.yml must forward the parent Release run identity")
                 if "actions: write" in text or "contents: write" in text:
                     errors.append("release-verification.yml must remain read-only")
 

@@ -191,3 +191,7 @@ Organization rulesets should require:
 Run `scripts/audit_org.py` or the Organization Audit workflow to find missing lifecycle callers, floating central refs, obsolete central SHAs, retired runner-controller usage, unsafe destructive-cleanup triggers, post-gate cleanup callers that can mutate refs directly, promotion-before-proof-completion topology, duplicated consumer proof gates, or local publication implementations.
 
 See `docs/CONTRACTS.md`, `docs/RUNNERS.md`, `docs/LIFECYCLE.md`, and `docs/ADOPTION.md` for the normative integration contract.
+
+## v0.1.3 verification-dispatch boundary
+
+Release verification no longer depends on a fourth chained `workflow_run`. After publication succeeds, Release calls a short reusable verification dispatcher that validates the exact parent Release run and immutable `vX.Y.Z` source, dispatches read-only `Release Verification` with `workflow_dispatch` on that tag, and exits without waiting. This preserves independent verification while avoiding GitHub workflow-chain depth suppression.

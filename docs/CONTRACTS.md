@@ -33,6 +33,7 @@ Normative reusable workloads:
 - `reusable-release-promote.yml`;
 - `reusable-release.yml`;
 - `reusable-release-verification.yml`;
+- `reusable-release-verification-dispatch.yml`;
 - `reusable-release-metadata-current.yml`;
 - `reusable-release-metadata.yml`;
 - `reusable-org-audit.yml`.
@@ -74,9 +75,10 @@ Branch Cleanup is the deliberate maintenance exception: its canonical caller pas
 3. **Release candidate** — dispatch `Trusted Release Proof`; it verifies those permanent gates, runs only release-specific acceptance, and produces the promotable repository payload once. The proof caller must not dispatch Release itself.
 4. **Promotion** — a separate `Release Promotion` caller is triggered by `workflow_run` only after `Trusted Release Proof` is `completed` with `success`; it carries the completed proof's `head_sha` into the bounded reusable promotion workload and exits after idempotently dispatching Release.
 5. **Publication** — Release imports the exact proof-produced payload, seals it with central evidence, and publishes it without rebuilding the repository payload.
-6. **Verification** — `Release Verification` independently checks the immutable published transaction.
-7. **Cleanup** — after merge/release closure, either explicitly dispatch Branch Cleanup against exact stale branch names or activate the dormant Post-Gate Branch Cleanup caller with a reviewed exact branch list. Both routes end at the same dispatch-only, exact-SHA-bound deletion engine and never move tags/releases.
-8. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
+6. **Verification dispatch** — after publication succeeds, Release calls the bounded verification dispatcher, which validates the exact parent run and immutable tag then triggers `Release Verification` with `workflow_dispatch` on that tag and exits. This **verification-dispatch boundary** avoids chained-`workflow_run` suppression.
+7. **Verification** — dispatch-only, read-only `Release Verification` independently checks the immutable published transaction.
+8. **Cleanup** — after merge/release closure, either explicitly dispatch Branch Cleanup against exact stale branch names or activate the dormant Post-Gate Branch Cleanup caller with a reviewed exact branch list. Both routes end at the same dispatch-only, exact-SHA-bound deletion engine and never move tags/releases.
+9. **Metadata repair** — independently reconcile mutable Release name/body while proving immutable source/payload identity is unchanged.
 
 This proof-completion boundary is mandatory. Publication authorization accepts only completed successful proof runs, so dispatching Release from a job inside the still-running proof workflow is a race and is non-compliant.
 

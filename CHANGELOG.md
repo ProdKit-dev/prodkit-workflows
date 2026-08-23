@@ -2,6 +2,16 @@
 
 All notable changes to this repository are documented here.
 
+## [0.1.3] - 2026-08-23
+
+- Fix automatic post-publication verification so it cannot be suppressed by GitHub's chained `workflow_run` depth limit.
+- Add `reusable-release-verification-dispatch.yml`; Release invokes it only after publication succeeds, and it validates the exact parent Release run, immutable tag/source identity, and dispatch-only verification caller before triggering verification.
+- Make generated `Release Verification` callers `workflow_dispatch` only, derive the source from `${{ github.sha }}` on the immutable tag, and remain read-only.
+- Bind automatic verification to the exact parent Release run ID while preserving source identity without a manually copied SHA and manual recovery after a completed Release.
+- Keep verification dispatch non-blocking and GitHub-hosted so it never waits while occupying a trusted product runner.
+- Update organization audit, contract tests, lifecycle documentation, generated callers and release notes to enforce the verification-dispatch boundary.
+- Keep the immutable `v0.1.2` release unchanged; v0.1.3 is the patch-level lifecycle correction discovered during v0.1.2 closure.
+
 ## [0.1.2] - 2026-08-23
 
 - Add reusable exact-main post-gate branch-cleanup authorization without duplicating the v0.1.1 deletion engine.

@@ -38,3 +38,17 @@ jobs:
       node_version: "24"
       pnpm_version: "11.21.0"
       environment: release
+
+  verification-dispatch:
+    name: dispatch verification
+    needs: release
+    permissions:
+      actions: write
+      contents: read
+    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+    with:
+      source_sha: ${{ github.sha }}
+      version: ${{ inputs.version }}
+      release_run_id: ${{ github.run_id }}
+      runner_json: '"ubuntu-latest"'
+      verification_workflow_file: release-verification.yml
