@@ -185,6 +185,8 @@ def main() -> None:
         'TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}',
         'event_name != "workflow_run"',
         'trigger_event != "push"',
+        "seen_names = set()",
+        "duplicate gate name",
         "target cleanup workflow must be workflow_dispatch-only",
         '"head_sha": expected, "event": "push"',
         'run.get("conclusion") != "success"',
@@ -193,10 +195,12 @@ def main() -> None:
         'evidence["state"] = "not_final_gate"',
         'evidence["state"] = "stale_trigger"',
         '"expected_default_sha": expected',
+        '"dry_run": False',
         '/actions/workflows/{workflow_id}/dispatches',
         'evidence["state"] = "dispatched"',
     ):
         require(gated, fragment, "reusable gated branch cleanup")
+    reject(gated, '"dry_run": "false"', "gated cleanup boolean dispatch")
     reject(gated, "/git/refs/", "gated cleanup must delegate deletion")
     reject(gated, 'method="DELETE"', "gated cleanup must delegate deletion")
 
