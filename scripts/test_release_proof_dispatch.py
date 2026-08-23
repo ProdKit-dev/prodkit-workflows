@@ -36,7 +36,7 @@ def main() -> None:
         "release proof dispatch deferred until exact-main gates complete",
         "required_workflows_json",
         "proof_workflow_file",
-        '"/dispatches"',
+        "/dispatches",
         '"ref": main_branch',
         "successful exact-source Trusted Release Proof already exists",
         "active exact-source Trusted Release Proof already exists",
