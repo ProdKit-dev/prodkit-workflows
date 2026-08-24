@@ -12,8 +12,9 @@ on:
         default: ""
 
 permissions:
-  actions: read
+  actions: write
   contents: read
+  pull-requests: read
 
 jobs:
   verification:
@@ -25,3 +26,7 @@ jobs:
       runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
       manifest_path: .prodkit/release.json
       release_workflow_file: release.yml
+      automatic_cleanup: true
+      cleanup_workflow_file: branch-cleanup.yml
+      main_branch: main
+      cleanup_branch_prefixes_json: '["release/","hotfix/"]'

@@ -24,10 +24,30 @@ on:
         required: false
         type: string
         default: ""
+      automatic_cleanup:
+        description: Dispatch canonical branch cleanup after immutable publication verifies.
+        required: false
+        type: boolean
+        default: true
+      cleanup_workflow_file:
+        description: Dispatch-only canonical branch cleanup workflow filename.
+        required: false
+        type: string
+        default: branch-cleanup.yml
+      main_branch:
+        required: false
+        type: string
+        default: main
+      cleanup_branch_prefixes_json:
+        description: Same-repository merged PR branch prefixes eligible for automatic release cleanup.
+        required: false
+        type: string
+        default: '["release/","hotfix/"]'
 
 permissions:
-  actions: read
+  actions: write
   contents: read
+  pull-requests: read
 
 concurrency:
   group: release-verification-${{ inputs.source_sha }}
@@ -43,6 +63,9 @@ jobs:
       MANIFEST_PATH: ${{ inputs.manifest_path }}
       RELEASE_WORKFLOW_FILE: ${{ inputs.release_workflow_file }}
       RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+      CLEANUP_WORKFLOW_FILE: ${{ inputs.cleanup_workflow_file }}
+      MAIN_BRANCH: ${{ inputs.main_branch }}
+      CLEANUP_BRANCH_PREFIXES_JSON: ${{ inputs.cleanup_branch_prefixes_json }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Verify tag, metadata, assets, and checksums
@@ -267,5 +290,160 @@ jobs:
                   },
                   sort_keys=True,
               )
+          )
+          PY
+
+      - name: Dispatch verified release branch cleanup
+        if: inputs.automatic_cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from typing import Any
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          source_sha = os.environ["SOURCE_SHA"]
+          main_branch = os.environ["MAIN_BRANCH"]
+          cleanup_file = os.environ["CLEANUP_WORKFLOW_FILE"]
+          prefixes = json.loads(os.environ["CLEANUP_BRANCH_PREFIXES_JSON"])
+          root = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "prodkit-workflows-release-cleanup-dispatch",
+          }
+
+          class ApiError(RuntimeError):
+              def __init__(self, status: int, body: str) -> None:
+                  super().__init__(f"GitHub API {status}: {body}")
+                  self.status = status
+                  self.body = body
+
+          def api(
+              method: str,
+              path: str,
+              payload: dict[str, Any] | None = None,
+              *,
+              allow_404: bool = False,
+          ) -> Any:
+              raw = None if payload is None else json.dumps(payload).encode()
+              request = urllib.request.Request(
+                  root + path,
+                  data=raw,
+                  method=method,
+                  headers={**headers, **({"Content-Type": "application/json"} if raw else {})},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=120) as response:
+                      body = response.read()
+                      return None if not body else json.loads(body)
+              except urllib.error.HTTPError as exc:
+                  if allow_404 and exc.code == 404:
+                      return None
+                  body = exc.read().decode(errors="replace")
+                  raise ApiError(exc.code, body) from exc
+
+          if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+              raise SystemExit("source_sha must be an exact lowercase commit SHA")
+          if not re.fullmatch(r"[A-Za-z0-9._/-]+", main_branch) or ".." in main_branch:
+              raise SystemExit("invalid main_branch")
+          if not re.fullmatch(r"[A-Za-z0-9._-]+\.ya?ml", cleanup_file):
+              raise SystemExit("cleanup_workflow_file must be a workflow filename")
+          if (
+              not isinstance(prefixes, list)
+              or not prefixes
+              or not all(isinstance(prefix, str) and prefix and not prefix.startswith("/") for prefix in prefixes)
+          ):
+              raise SystemExit("cleanup_branch_prefixes_json must be a non-empty JSON string array")
+          if len(set(prefixes)) != len(prefixes):
+              raise SystemExit("cleanup branch prefixes must be unique")
+
+          current_main = str(
+              api("GET", f"/git/ref/heads/{urllib.parse.quote(main_branch, safe='/')}")["object"]["sha"]
+          )
+          if current_main != source_sha:
+              comparison = api(
+                  "GET",
+                  f"/compare/{urllib.parse.quote(source_sha, safe='')}...{urllib.parse.quote(current_main, safe='')}",
+              )
+              merge_base = (comparison.get("merge_base_commit") or {}).get("sha")
+              if comparison.get("status") != "ahead" or merge_base != source_sha:
+                  raise SystemExit(
+                      f"current {main_branch} no longer descends from verified release {source_sha}: {current_main}"
+                  )
+
+          prs = api(
+              "GET",
+              f"/commits/{urllib.parse.quote(source_sha, safe='')}/pulls?per_page=100",
+          )
+          eligible: list[dict[str, Any]] = []
+          for pr in prs:
+              base = pr.get("base") or {}
+              head = pr.get("head") or {}
+              head_repo = head.get("repo") or {}
+              branch = str(head.get("ref") or "")
+              if (
+                  pr.get("state") == "closed"
+                  and pr.get("merged_at")
+                  and pr.get("merge_commit_sha") == source_sha
+                  and base.get("ref") == main_branch
+                  and head_repo.get("full_name") == repo
+                  and branch != main_branch
+                  and any(branch.startswith(prefix) for prefix in prefixes)
+              ):
+                  eligible.append(pr)
+
+          unique = {str((pr.get("head") or {}).get("ref")): pr for pr in eligible}
+          if not unique:
+              print("verified release has no eligible merged release/hotfix branch; cleanup dispatch not needed")
+              raise SystemExit(0)
+          if len(unique) != 1:
+              raise SystemExit(
+                  "verified release maps to multiple eligible merged branches: " + ", ".join(sorted(unique))
+              )
+
+          branch, pr = next(iter(unique.items()))
+          expected_head_sha = str((pr.get("head") or {}).get("sha") or "")
+          if not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha):
+              raise SystemExit("merged PR head SHA is missing or invalid")
+          ref = api(
+              "GET",
+              f"/git/ref/heads/{urllib.parse.quote(branch, safe='/')}",
+              allow_404=True,
+          )
+          if ref is None:
+              print(f"verified release branch {branch} is already absent; cleanup is complete")
+              raise SystemExit(0)
+          current_branch_sha = str(ref["object"]["sha"])
+          if current_branch_sha != expected_head_sha:
+              raise SystemExit(
+                  f"release branch {branch} moved after merge: {current_branch_sha} != {expected_head_sha}"
+              )
+
+          api(
+              "POST",
+              f"/actions/workflows/{urllib.parse.quote(cleanup_file, safe='')}/dispatches",
+              {
+                  "ref": main_branch,
+                  "inputs": {
+                      "branches_json": json.dumps([branch], separators=(",", ":")),
+                      "dry_run": False,
+                      "expected_default_sha": current_main,
+                  },
+              },
+          )
+          print(
+              f"dispatched canonical cleanup for verified merged branch {branch} "
+              f"with default-branch guard {current_main}"
           )
           PY
