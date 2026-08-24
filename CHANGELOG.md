@@ -2,6 +2,17 @@
 
 All notable changes to this repository are documented here.
 
+## [0.1.5] - 2026-08-25
+
+- Complete the normal release lifecycle so exact-main gate completion automatically reaches Trusted Release Proof, promotion, publication, independent verification, and merged release-branch cleanup without operator orchestration.
+- Extend immutable Release Verification to dispatch canonical Branch Cleanup only after tag, release metadata/body, exact source, Release-run identity, remote assets, and `SHA256SUMS` all verify.
+- Keep destructive ref mutation isolated in the existing Branch Cleanup workflow; Release Verification receives only `actions: write`, `contents: read`, and `pull-requests: read` so it can prove and dispatch cleanup but cannot delete refs itself.
+- Infer exactly one same-repository merged release/hotfix PR branch from the immutable release commit, require the branch to still point to the merged PR head, and fail closed on ambiguity or post-merge branch movement.
+- Permit cleanup after later `main` advancement only when the verified release SHA remains the merge base/ancestor, and bind destructive cleanup to the current default-branch SHA.
+- Treat an already-absent release branch as idempotent cleanup success and retain every manual `workflow_dispatch` path as recovery-only fallback.
+- Preserve the optional protected `release` environment as the single human publication-approval boundary; proof, promotion, verification, and cleanup remain automatic around it.
+- Add a permanent regression contract for verified automatic cleanup and document coordinated consumer adoption of one immutable v0.1.5 lifecycle pin.
+
 ## [0.1.4] - 2026-08-23
 
 - Bridge automatically dispatched proof to Release Promotion with an exact-source, bounded GitHub-hosted observer so v0.1.4 does not depend on a suppressed `workflow_run` edge.
