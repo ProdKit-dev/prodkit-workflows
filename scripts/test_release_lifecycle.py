@@ -55,16 +55,23 @@ def main() -> None:
         reject(promote, forbidden, "reusable release promotion")
 
     for needle in (
-        "actions: read",
+        "actions: write",
         "contents: read",
+        "pull-requests: read",
         "SHA256SUMS",
         "target_commitish",
         "release_workflow_file",
         "published asset set mismatch",
         "GitHub asset digest mismatch",
+        "automatic_cleanup:",
+        "cleanup_workflow_file:",
+        "cleanup_branch_prefixes_json:",
+        "Dispatch verified release branch cleanup",
+        'pr.get("merge_commit_sha") == source_sha',
+        '"expected_default_sha": current_main',
     ):
         require(verification, needle, "reusable release verification")
-    for forbidden in ("actions: write", "contents: write", "time.sleep(", "while time.time()"):
+    for forbidden in ("contents: write", "time.sleep(", "while time.time()", 'method="DELETE"'):
         reject(verification, forbidden, "reusable release verification")
     require(verification, "release_run_id:", "reusable release parent-run handoff")
     require(verification, "parent Release workflow", "reusable release parent-run validation")
