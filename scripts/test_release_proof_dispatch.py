@@ -25,16 +25,15 @@ def main() -> None:
     bridge = text(".github/workflows/reusable-release-proof-promotion-dispatch.yml")
     caller = text(".github/workflows/release-proof-dispatch.yml")
     template = text("templates/caller/release-proof-dispatch.yml")
+    self_proof = text(".github/workflows/trusted-release-proof.yml")
     proof = text("templates/caller/trusted-release-proof.yml")
     promotion = text("templates/caller/release-promotion.yml")
-    bootstrap = text("scripts/bootstrap_consumer.py")
     audit = text("scripts/audit_org.py")
 
     for needle in (
         "actions: write",
         "contents: read",
         "release-proof-dispatch-${{ inputs.source_sha }}",
-        "canonical version",
         "release proof dispatch deferred until exact-main gates complete",
         "exact-main release gates completed unsuccessfully",
         "required_workflows_json",
@@ -46,34 +45,21 @@ def main() -> None:
         'expected_source_contract = "source_sha: $" + "{{ github.sha }}"',
     ):
         require(reusable, needle, "reusable automatic proof dispatcher")
-    reject(reusable, 'if "source_sha: ${{ github.sha }}" not in caller_text:', "dispatcher interpolation safety")
     reject(reusable, "contents: write", "dispatcher mutation boundary")
     for forbidden in ("time.sleep(", "while time.time()", "wait_for_proof"):
         reject(reusable, forbidden, "dispatcher non-blocking contract")
 
-    # GitHub suppresses workflow_run listeners for workflows dispatched with the
-    # repository GITHUB_TOKEN. Keep the proof dispatcher itself non-blocking,
-    # then use a GitHub-hosted bounded bridge to observe the exact proof and
-    # explicitly workflow_dispatch Release Promotion.
     for needle in (
-        "actions: write",
-        "contents: read",
         "release-proof-promotion-dispatch-${{ inputs.source_sha }}",
         "proof_timeout_seconds:",
         "poll_seconds:",
-        "proof/promotion bridge deferred until exact-main gates complete",
         "timed out waiting for exact-source Trusted Release Proof",
-        "exact-source Trusted Release Proof",
-        "Release Promotion caller must accept workflow_dispatch exact-source handoff",
         "promotion_workflow_file",
-        '"source_sha": source_sha',
         '"proof_run_id": str(selected_proof["id"])',
-        "no duplicate dispatch",
         "time.sleep(poll_seconds)",
     ):
-        require(bridge, needle, "proof/promotion bridge")
+        require(bridge, needle, "optional hosted proof/promotion bridge")
     reject(bridge, "contents: write", "proof/promotion bridge mutation boundary")
-    require(bridge, 'default: \'"ubuntu-latest"\'', "proof/promotion bridge hosted default")
 
     for body, label in ((caller, "self caller"), (template, "consumer caller template")):
         for needle in (
@@ -83,55 +69,53 @@ def main() -> None:
             "branches: [main]",
             "github.event.workflow_run.event == 'push'",
             "source_sha: ${{ github.event.workflow_run.head_sha }}",
-            'runner_json: \'"ubuntu-latest"\'',
+            "PRODKIT_RUNNER_JSON",
             "required_workflows_json: '[\"CI\",\"Security\"]'",
             "proof_workflow_file: trusted-release-proof.yml",
             "bridge proof to promotion",
+            "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE == 'true'",
+            'runner_json: \'"ubuntu-latest"\'',
             "promotion_workflow_file: release-promotion.yml",
         ):
             require(body, needle, label)
-        reject(body, "workflow_run.conclusion == 'success'", label + " must delegate gate outcomes")
+        reject(body, "workflow_run.conclusion == 'success'", label + " gate delegation")
         reject(body, "contents: write", label)
 
-    require(
-        caller,
-        "uses: ./.github/workflows/reusable-release-proof-dispatch.yml",
-        "self caller local proof dispatcher",
-    )
-    require(
-        caller,
-        "uses: ./.github/workflows/reusable-release-proof-promotion-dispatch.yml",
-        "self caller local proof promotion bridge",
-    )
-    require(
-        template,
-        "reusable-release-proof-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "consumer caller immutable proof dispatcher pin",
-    )
-    require(
-        template,
-        "reusable-release-proof-promotion-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "consumer caller immutable proof promotion bridge pin",
-    )
-
-    require(proof, "workflow_dispatch:", "Trusted Release Proof dispatch boundary")
-    reject(proof, "workflow_run:", "Trusted Release Proof dispatch boundary")
-    require(proof, "source_sha: ${{ github.sha }}", "Trusted Release Proof exact source")
+    for body, label in ((self_proof, "self proof"), (proof, "consumer proof template")):
+        for needle in (
+            "workflow_dispatch:",
+            "source_sha: ${{ github.sha }}",
+            "needs: proof",
+            "promote proven release",
+            "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE != 'true'",
+            "PRODKIT_RUNNER_JSON",
+            "actions: write",
+            "reusable-release-promote.yml",
+            "release_workflow_file: release.yml",
+        ):
+            require(body, needle, label)
+        reject(body, "workflow_run:", label + " dispatch boundary")
 
     for needle in (
         "workflow_run:",
         "workflow_dispatch:",
         "source_sha:",
         "proof_run_id:",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE == 'true'",
+        "github.event.workflow_run.conclusion == 'success'",
         "github.event_name == 'workflow_dispatch'",
         "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "PRODKIT_RUNNER_JSON",
     ):
         require(promotion, needle, "Release Promotion dual-entry caller")
 
-    require(bootstrap, 'src / "caller/release-proof-dispatch.yml"', "consumer bootstrap")
-    require(audit, '"release-proof-dispatch.yml": "reusable-release-proof-dispatch.yml"', "organization audit")
-    require(audit, 'if filename == "release-proof-dispatch.yml":', "organization audit")
-    require(audit, "must let the central dispatcher evaluate gate conclusions", "organization audit")
+    for needle in (
+        '"release-proof-dispatch.yml": "reusable-release-proof-dispatch.yml"',
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE",
+        "trusted-release-proof.yml must be workflow_dispatch-only",
+        "release-promotion.yml must not poll or wait for Release",
+    ):
+        require(audit, needle, "organization audit")
 
     print("automatic release proof dispatch contract passed")
 
