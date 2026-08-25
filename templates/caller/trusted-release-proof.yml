@@ -29,3 +29,17 @@ jobs:
       node_enabled: true
       node_version: "24"
       pnpm_version: "11.21.0"
+
+  promote:
+    name: promote proven release
+    needs: proof
+    if: ${{ vars.PRODKIT_GITHUB_HOSTED_CONTROL_PLANE != 'true' }}
+    permissions:
+      actions: write
+      contents: read
+    uses: WORKFLOWS_REPOSITORY/.github/workflows/reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA
+    with:
+      source_sha: ${{ github.sha }}
+      runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+      manifest_path: .prodkit/release.json
+      release_workflow_file: release.yml
