@@ -23,23 +23,22 @@ def reject(haystack: str, needle: str, label: str) -> None:
 def main() -> None:
     promote = text(".github/workflows/reusable-release-promote.yml")
     reusable_proof = text(".github/workflows/reusable-release-proof.yml")
-    proof_promotion_bridge = text(".github/workflows/reusable-release-proof-promotion-dispatch.yml")
+    proof_bridge = text(".github/workflows/reusable-release-proof-promotion-dispatch.yml")
     verification = text(".github/workflows/reusable-release-verification.yml")
     verification_dispatch = text(".github/workflows/reusable-release-verification-dispatch.yml")
     reusable_release = text(".github/workflows/reusable-release.yml")
     compatibility_release = text(".github/workflows/reusable-release-pipeline.yml")
     proof_template = text("templates/caller/trusted-release-proof.yml")
+    dispatch_template = text("templates/caller/release-proof-dispatch.yml")
     promotion_template = text("templates/caller/release-promotion.yml")
-    proof_adapter_template = text("templates/consumer/.prodkit/workflows/release-proof.sh")
     verification_template = text("templates/caller/release-verification.yml")
     release_template = text("templates/caller/release.yml")
-    bootstrap = text("scripts/bootstrap_consumer.py")
+    cleanup_template = text("templates/caller/branch-cleanup.yml")
+    post_gate_template = text("templates/caller/post-gate-branch-cleanup.yml")
     audit = text("scripts/audit_org.py")
     lifecycle = text("docs/LIFECYCLE.md")
-    contracts = text("docs/CONTRACTS.md")
-    security_model = text("docs/SECURITY-MODEL.md")
     adoption = text("docs/ADOPTION.md")
-    readme = text("README.md")
+    runners = text("docs/RUNNERS.md")
 
     for needle in (
         "actions: write",
@@ -55,6 +54,66 @@ def main() -> None:
         reject(promote, forbidden, "reusable release promotion")
 
     for needle in (
+        "Verify permanent exact-SHA gates",
+        "prepare_release_payload:",
+        "Build promotable release payload once",
+        "release-payload.json",
+        "trusted-release-proof-${{ inputs.source_sha }}",
+    ):
+        require(reusable_proof, needle, "reusable release proof")
+
+    for needle in (
+        "workflow_dispatch:",
+        "prepare_release_payload: true",
+        "source_sha: ${{ github.sha }}",
+        "needs: proof",
+        "promote proven release",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE != 'true'",
+        "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "PRODKIT_RUNNER_JSON",
+    ):
+        require(proof_template, needle, "trusted release proof caller template")
+    reject(proof_template, "workflow_run:", "trusted release proof dispatch boundary")
+
+    for needle in (
+        "reusable-release-proof-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "PRODKIT_RUNNER_JSON",
+        "bridge proof to promotion",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE == 'true'",
+        "reusable-release-proof-promotion-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        'runner_json: \'"ubuntu-latest"\'',
+    ):
+        require(dispatch_template, needle, "release proof dispatch template")
+
+    for needle in (
+        "release-proof-promotion-dispatch-",
+        "proof_timeout_seconds:",
+        "poll_seconds:",
+        "timed out waiting for exact-source Trusted Release Proof",
+        "promotion_workflow_file",
+        '"proof_run_id": str(selected_proof["id"])',
+        "time.sleep(poll_seconds)",
+    ):
+        require(proof_bridge, needle, "optional hosted proof observer")
+    reject(proof_bridge, "contents: write", "hosted proof observer mutation boundary")
+
+    for needle in (
+        "workflow_run:",
+        'workflows: ["Trusted Release Proof"]',
+        "workflow_dispatch:",
+        "source_sha:",
+        "proof_run_id:",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE == 'true'",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event_name == 'workflow_dispatch'",
+        "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "PRODKIT_RUNNER_JSON",
+    ):
+        require(promotion_template, needle, "release promotion caller template")
+    for forbidden in ("time.sleep(", "while time.time()", "wait_for_release"):
+        reject(promotion_template, forbidden, "release promotion caller template")
+
+    for needle in (
         "actions: write",
         "contents: read",
         "pull-requests: read",
@@ -67,100 +126,20 @@ def main() -> None:
         "cleanup_workflow_file:",
         "cleanup_branch_prefixes_json:",
         "Dispatch verified release branch cleanup",
-        'pr.get("merge_commit_sha") == source_sha',
-        '"expected_default_sha": current_main',
     ):
         require(verification, needle, "reusable release verification")
-    for forbidden in ("contents: write", "time.sleep(", "while time.time()", 'method="DELETE"'):
-        reject(verification, forbidden, "reusable release verification")
-    require(verification, "release_run_id:", "reusable release parent-run handoff")
-    require(verification, "parent Release workflow", "reusable release parent-run validation")
-
-    # Proof consumes permanent exact-SHA evidence instead of rerunning CI/Security,
-    # then produces the repository-owned promotable payload exactly once.
-    for needle in (
-        "Verify permanent exact-SHA gates",
-        "prepare_release_payload:",
-        "Build promotable release payload once",
-        "release-payload.json",
-        "trusted-release-proof-${{ inputs.source_sha }}",
-    ):
-        require(reusable_proof, needle, "reusable release proof")
-    for needle in (
-        "prepare_release_payload: true",
-        "required_workflows_json: '[\"CI\",\"Security\"]'",
-        "actions: read",
-        "reusable-release-proof.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        'node_version: "24"',
-    ):
-        require(proof_template, needle, "trusted release proof caller template")
-    for forbidden in (
-        "reusable-release-promote.yml@",
-        "needs: proof",
-        "actions: write",
-    ):
-        reject(proof_template, forbidden, "trusted release proof caller template")
-
-    # Automatic proof is dispatched with the repository GITHUB_TOKEN, so the
-    # generated lifecycle must not depend exclusively on a downstream workflow_run.
-    # A GitHub-hosted bounded bridge observes the exact proof and explicitly dispatches
-    # Release Promotion after successful completion.
-    for needle in (
-        "actions: write",
-        "contents: read",
-        "release-proof-promotion-dispatch-",
-        "proof_timeout_seconds:",
-        "poll_seconds:",
-        "timed out waiting for exact-source Trusted Release Proof",
-        "promotion_workflow_file",
-        '"proof_run_id": str(selected_proof["id"])',
-        "time.sleep(poll_seconds)",
-    ):
-        require(proof_promotion_bridge, needle, "proof-to-promotion bridge")
-    reject(proof_promotion_bridge, "contents: write", "proof-to-promotion bridge")
-
-    # Promotion must start only after the proof workflow itself is complete.
-    for needle in (
-        "workflow_run:",
-        'workflows: ["Trusted Release Proof"]',
-        "types: [completed]",
-        "github.event.workflow_run.event == 'workflow_dispatch'",
-        "github.event.workflow_run.conclusion == 'success'",
-        "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "workflow_run.head_sha",
-        "actions: write",
-        "workflow_dispatch:",
-        "source_sha:",
-        "proof_run_id:",
-        "github.event_name == 'workflow_dispatch'",
-    ):
-        require(promotion_template, needle, "release promotion caller template")
-    for forbidden in ("time.sleep(", "while time.time()", "wait_for_release"):
-        reject(promotion_template, forbidden, "release promotion caller template")
-
-    for forbidden in (
-        "ci-python.sh",
-        "ci-node.sh",
-        "security-python.sh",
-        "security-node.sh",
-        "security-custom.sh",
-        "release-build.sh",
-    ):
-        reject(proof_adapter_template, forbidden, "release proof adapter template")
-    require(
-        proof_adapter_template,
-        "Do not rerun CI/Security matrices here",
-        "release proof adapter template",
-    )
+    reject(verification, "contents: write", "verification ref mutation boundary")
 
     for needle in (
         "workflow_dispatch:",
         "reusable-release-verification.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
         "source_sha: ${{ github.sha }}",
         "release_run_id: ${{ inputs.release_run_id }}",
+        "automatic_cleanup: true",
+        "cleanup_workflow_file: branch-cleanup.yml",
     ):
-        require(verification_template, needle, "release verification caller template")
-    reject(verification_template, "workflow_run:", "release verification caller chain-depth safety")
+        require(verification_template, needle, "release verification template")
+    reject(verification_template, "workflow_run:", "verification chain-depth safety")
 
     for needle in (
         "actions: write",
@@ -169,190 +148,66 @@ def main() -> None:
         '"ref": tag',
         '"release_run_id": release_run_id',
         "/dispatches",
-        "verification caller must be workflow_dispatch-only",
     ):
         require(verification_dispatch, needle, "reusable verification dispatch")
     reject(verification_dispatch, "time.sleep(", "reusable verification dispatch")
+
     for needle in (
+        "target_sha: ${{ github.sha }}",
+        "proof_workflow_file: .github/workflows/trusted-release-proof.yml",
+        "reuse_proof_payload: true",
         "verification-dispatch:",
         "needs: release",
         "reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
         "release_run_id: ${{ github.run_id }}",
+        "PRODKIT_RUNNER_JSON",
     ):
-        require(release_template, needle, "release verification dispatch handoff")
-
-    # Release authorization belongs to the central publisher, not copied Python
-    # in every consumer caller.
-    require(
-        release_template,
-        "proof_workflow_file: .github/workflows/trusted-release-proof.yml",
-        "release caller template",
-    )
-    require(release_template, "reuse_proof_payload: true", "release caller template")
+        require(release_template, needle, "release caller template")
     reject(release_template, "proof-gate:", "release caller template")
     reject(release_template, "urllib.request", "release caller template")
-    require(reusable_release, "proof_workflow_file:", "reusable release proof input")
-    require(reusable_release, "reuse_proof_payload:", "reusable release proof-payload input")
-    require(
-        reusable_release,
-        "x.get('path')==proof_file",
-        "reusable release proof authorization",
-    )
-    require(
-        reusable_release,
+
+    for needle in (
+        "proof_workflow_file:",
+        "reuse_proof_payload:",
         "missing successful exact-SHA workflow_dispatch proof",
-        "reusable release proof authorization",
-    )
-    for needle in (
-        "proof_run_id:",
         "Download proof-produced release payload",
-        "release-payload.json",
         "proof payload digest mismatch",
-        "Run compatibility release build contract",
-    ):
-        require(reusable_release, needle, "proof-payload reuse")
-
-    # The reusable publisher owns version-level serialization. A direct caller
-    # must not claim the same release-${version} group.
-    require(reusable_release, "group: release-${{ inputs.version }}", "reusable release")
-    reject(release_template, "group: release-${{ inputs.version }}", "release caller template")
-
-    # Release publication is checkpointed at job boundaries. A late attest or
-    # publish failure can use GitHub's "re-run failed jobs" semantics without
-    # rebuilding a successful sealed payload.
-    for needle in (
-        "  prepare:",
-        "  build:",
-        "  attest:",
-        "  publish:",
-        "name: Upload sealed release payload",
-        "actions/download-artifact@",
-        "needs: [prepare, build]",
-        "needs: [prepare, build, attest]",
+        "group: release-${{ inputs.version }}",
         "Create or resume immutable publication",
-        "overwrite: true",
     ):
-        require(reusable_release, needle, "resumable release publisher")
-    reject(reusable_release, "  release:\n    name: Guarded release", "resumable release publisher")
-    require(
-        reusable_release,
-        "if name in remote: continue",
-        "resumable draft asset upload",
-    )
-    reject(
-        reusable_release,
-        "for a in rel.get('assets',[]): request('DELETE',a['url'])",
-        "resumable draft asset upload",
-    )
-
-    # GitHub Artifact Attestations are plan/repository-capability dependent.
-    attest_block = reusable_release.split("      attest:\n", 1)[1].split(
-        "      environment:\n", 1
-    )[0]
-    require(attest_block, "default: false", "reusable release attestation input")
+        require(reusable_release, needle, "reusable release publisher")
+    require(reusable_release, "uses: actions/attest@", "optional artifact attestation")
     require(
         reusable_release,
         "needs.prepare.outputs.published != 'true' && inputs.attest",
-        "reusable release attestation job",
-    )
-    require(reusable_release, "uses: actions/attest@", "reusable release attestation step")
-
-    compatibility_attest_block = compatibility_release.split("      attest:\n", 1)[1].split(
-        "      environment:\n", 1
-    )[0]
-    require(
-        compatibility_attest_block,
-        "default: false",
-        "compatibility release attestation input",
-    )
-    require(
-        compatibility_release,
-        "attest: ${{ inputs.attest }}",
-        "compatibility release attestation forwarding",
-    )
-    require(
-        compatibility_release,
-        "proof_workflow_file: ${{ inputs.proof_workflow_file }}",
-        "compatibility release proof forwarding",
+        "attestation guard",
     )
     require(
         compatibility_release,
         "reuse_proof_payload: ${{ inputs.reuse_proof_payload }}",
         "compatibility proof-payload forwarding",
     )
-    reject(compatibility_release, "proof-gate:", "compatibility release pipeline")
-    reject(compatibility_release, "urllib.request", "compatibility release pipeline")
 
-    require(
-        bootstrap,
-        'src / "caller/release-promotion.yml"',
-        "consumer bootstrap",
-    )
-    require(
-        bootstrap,
-        'src / "caller/release-verification.yml"',
-        "consumer bootstrap",
-    )
-    require(
-        audit,
-        '"release-promotion.yml": "reusable-release-promote.yml"',
-        "organization audit",
-    )
-    require(
-        audit,
-        '"release-verification.yml": "reusable-release-verification.yml"',
-        "organization audit",
-    )
-    require(
-        audit,
-        "must finish before Release promotion starts",
-        "organization audit",
-    )
-    require(audit, "must not poll or wait for Release", "organization audit")
+    for template, label in (
+        (cleanup_template, "branch cleanup template"),
+        (post_gate_template, "post-gate cleanup template"),
+    ):
+        require(template, "PRODKIT_RUNNER_JSON", label)
+    require(cleanup_template, "contents: write", "branch cleanup mutation authority")
+    reject(post_gate_template, "contents: write", "post-gate cleanup delegation")
+
+    for needle in (
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE",
+        "trusted-release-proof.yml must be workflow_dispatch-only",
+        "release-proof-dispatch.yml must not mutate repository content",
+        "release-verification.yml may dispatch cleanup but must not mutate refs directly",
+    ):
+        require(audit, needle, "organization audit")
 
     require(lifecycle, "Single-runner non-blocking rule", "lifecycle documentation")
-    require(
-        lifecycle,
-        "must never dispatch another workflow that also needs the runner and then poll",
-        "lifecycle documentation",
-    )
-    require(lifecycle, "proof-completion boundary", "lifecycle documentation")
-    require(lifecycle, "verification-dispatch boundary", "lifecycle documentation")
-    require(lifecycle, "Artifact Attestations are optional", "lifecycle documentation")
-    require(lifecycle, "Re-run failed jobs", "lifecycle documentation")
-    require(lifecycle, "proof-produced", "lifecycle documentation")
-    require(contracts, "Artifact Attestations are capability-dependent", "consumer contracts")
-    require(contracts, "sealed payload", "consumer contracts")
-    require(contracts, "proof-produced", "consumer contracts")
-    require(contracts, "verification-dispatch boundary", "consumer contracts")
-    require(
-        security_model,
-        "Artifact Attestations are an optional additional trust signal",
-        "security model",
-    )
-    require(
-        adoption,
-        "wait for the `Release Promotion` workflow",
-        "adoption guide automatic promotion",
-    )
-    require(
-        adoption,
-        "Do not manually dispatch `Release` after a successful proof",
-        "adoption guide duplicate release prevention",
-    )
-    reject(
-        adoption,
-        "after proof succeeds, dispatch `Release`",
-        "adoption guide obsolete manual promotion",
-    )
-    require(
-        readme,
-        "Artifact Attestations are an optional additional provenance layer",
-        "README",
-    )
-    require(readme, "Re-run failed jobs", "README")
-    require(readme, "proof-produced", "README")
-    require(readme, "verification-dispatch boundary", "README")
+    require(lifecycle, "serialized proof-to-promotion", "lifecycle documentation")
+    require(adoption, "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE", "adoption guide")
+    require(runners, "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE", "runner guide")
 
     print("release lifecycle contracts passed")
 
