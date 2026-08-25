@@ -331,7 +331,9 @@ def main() -> None:
                 if dispatcher not in text:
                     errors.append("release.yml missing independent verification dispatcher")
                 if "proof-gate:" in text or "urllib.request" in text:
-                    errors.append("release.yml must not duplicate central proof authorization")
+                    errors.append(
+                        "release.yml must not duplicate central proof-gate implementation"
+                    )
                 for pattern in direct_release_patterns:
                     if re.search(pattern, text, re.I):
                         errors.append(
