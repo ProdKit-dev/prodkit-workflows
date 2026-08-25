@@ -28,7 +28,7 @@ jobs:
       version: ${{ inputs.version }}
       target_sha: ${{ github.sha }}
       prerelease: ${{ inputs.prerelease }}
-      runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+      runner_json: '"ubuntu-latest"'
       proof_workflow_file: .github/workflows/trusted-release-proof.yml
       reuse_proof_payload: true
       environment: release
@@ -44,5 +44,5 @@ jobs:
       source_sha: ${{ github.sha }}
       version: ${{ inputs.version }}
       release_run_id: ${{ github.run_id }}
-      runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+      runner_json: '"ubuntu-latest"'
       verification_workflow_file: release-verification.yml

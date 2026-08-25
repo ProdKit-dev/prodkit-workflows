@@ -20,15 +20,14 @@ jobs:
     uses: ./.github/workflows/reusable-release-proof-dispatch.yml
     with:
       source_sha: ${{ github.event.workflow_run.head_sha }}
-      runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+      runner_json: '"ubuntu-latest"'
       manifest_path: .prodkit/release.json
       required_workflows_json: '["CI","Security"]'
       proof_workflow_file: trusted-release-proof.yml
 
-  # The hosted observer remains available for installations that explicitly opt
-  # into GitHub-hosted control-plane execution. The default path is serialized
-  # in Trusted Release Proof so a single trusted runner cannot deadlock while a
-  # polling bridge waits for proof on that same runner.
+  # The central public control-plane repository has GitHub-hosted capacity and
+  # can keep its own observer hosted. Consumer templates separately default to
+  # the serialized trusted-runner path for private repositories.
   promote:
     name: bridge proof to promotion
     needs: dispatch

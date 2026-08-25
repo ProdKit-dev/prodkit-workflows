@@ -31,6 +31,6 @@ jobs:
     uses: ./.github/workflows/reusable-release-promote.yml
     with:
       source_sha: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.source_sha }}
-      runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
+      runner_json: '"ubuntu-latest"'
       manifest_path: .prodkit/release.json
       release_workflow_file: release.yml
