@@ -69,7 +69,6 @@ def main() -> None:
             "branches: [main]",
             "github.event.workflow_run.event == 'push'",
             "source_sha: ${{ github.event.workflow_run.head_sha }}",
-            "PRODKIT_RUNNER_JSON",
             "required_workflows_json: '[\"CI\",\"Security\"]'",
             "proof_workflow_file: trusted-release-proof.yml",
             "bridge proof to promotion",
@@ -80,6 +79,7 @@ def main() -> None:
             require(body, needle, label)
         reject(body, "workflow_run.conclusion == 'success'", label + " gate delegation")
         reject(body, "contents: write", label)
+    require(template, "PRODKIT_RUNNER_JSON", "consumer trusted-runner dispatcher")
 
     for body, label in ((self_proof, "self proof"), (proof, "consumer proof template")):
         for needle in (
@@ -88,13 +88,14 @@ def main() -> None:
             "needs: proof",
             "promote proven release",
             "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE != 'true'",
-            "PRODKIT_RUNNER_JSON",
             "actions: write",
             "reusable-release-promote.yml",
             "release_workflow_file: release.yml",
         ):
             require(body, needle, label)
         reject(body, "workflow_run:", label + " dispatch boundary")
+    require(self_proof, 'runner_json: \'"ubuntu-latest"\'', "self proof hosted policy")
+    require(proof, "PRODKIT_RUNNER_JSON", "consumer proof trusted-runner policy")
 
     for needle in (
         "workflow_run:",
@@ -107,7 +108,7 @@ def main() -> None:
         "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
         "PRODKIT_RUNNER_JSON",
     ):
-        require(promotion, needle, "Release Promotion dual-entry caller")
+        require(promotion, needle, "Release Promotion dual-entry consumer caller")
 
     for needle in (
         '"release-proof-dispatch.yml": "reusable-release-proof-dispatch.yml"',
