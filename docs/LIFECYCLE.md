@@ -7,9 +7,9 @@
 | Stage | Trigger | Purpose |
 | --- | --- | --- |
 | Pull request | `pull_request` | CI, Security, optional CodeQL feedback before merge |
-| Exact main | `push` to `main` | Certify the actual merged SHA |
+| Main branch / exact main | `push` to `main` | Certify the actual merged SHA |
 | Release proof authorization | `workflow_run` after permanent gates | Detect an unpublished canonical version and dispatch proof |
-| Trusted Release Proof | `workflow_dispatch` | Recheck exact-source gates, run release-only acceptance, build promotable payload once |
+| Release candidate / Trusted Release Proof | `workflow_dispatch` | Recheck exact-source gates, run release-only acceptance, build promotable payload once |
 | Promotion | dependent job after proof by default | Dispatch Release only after proof succeeds |
 | Publication | `workflow_dispatch` | Import/seal proof payload and publish behind optional `release` environment approval |
 | Verification | `workflow_dispatch` on immutable tag | Independently verify source, metadata, assets and checksums |
@@ -54,9 +54,9 @@ Required exact-SHA permanent gates are supplied by the consumer. The generated b
 
 Before dispatch, the authorizer verifies that `Trusted Release Proof` remains `workflow_dispatch` only and certifies `source_sha: ${{ github.sha }}`.
 
-## Trusted Release Proof
+## Release candidate: Trusted Release Proof
 
-Trusted Release Proof remains dispatch-only. It certifies the exact current-main source, verifies permanent gate evidence, runs only release-specific repository acceptance, and builds the repository-owned promotable payload once.
+Trusted Release Proof remains dispatch-only. It certifies the exact current-main source, verifies permanent gate evidence, runs only release-specific repository acceptance, and builds the repository-owned promotable payload once. Trusted Release Proof does not run on every pull-request commit; automatic dispatch is reserved for an unpublished canonical release candidate after exact-main gates are satisfied.
 
 The proof payload is content-addressed by its manifest and digests. Release reuses that exact payload rather than rebuilding an independent version of the same artifacts.
 
@@ -92,8 +92,14 @@ Release Verification may identify the same-repository merged release/hotfix PR a
 
 Branch Cleanup is `workflow_dispatch` only. It rejects the default branch, protected branches, open-PR heads, malformed/duplicate targets and target movement. It binds deletion to the reviewed default SHA, revalidates immediately before mutation, serializes deletion and verifies each ref is absent afterward.
 
+## Metadata repair
+
+Metadata repair remains separate from immutable publication. It may reconcile Release presentation only after immutable tag/source/payload identity is proved unchanged; it cannot move tags or replace authoritative release payloads.
+
 ## Backward compatibility
 
 Consumers stay pinned to immutable workflow SHAs. v0.1.5 consumers keep the v0.1.5 hosted-observer topology until they deliberately migrate. v0.1.6 consumers should install the complete generated caller family from one immutable v0.1.6 source.
 
 `reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain compatibility entry points for historical consumers; new integrations should use direct runner selection and the current proof/promotion/publication/verification contracts.
+
+Quality is a release-presentation reference, not a runner-controller dependency.
