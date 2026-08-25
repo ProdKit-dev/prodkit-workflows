@@ -50,5 +50,5 @@ jobs:
       source_sha: ${{ github.sha }}
       version: ${{ inputs.version }}
       release_run_id: ${{ github.run_id }}
-      runner_json: '"ubuntu-latest"'
+      runner_json: ${{ vars.PRODKIT_RUNNER_JSON != '' && vars.PRODKIT_RUNNER_JSON || '["self-hosted","Linux","X64"]' }}
       verification_workflow_file: release-verification.yml
