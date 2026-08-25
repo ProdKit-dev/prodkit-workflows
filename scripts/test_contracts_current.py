@@ -133,8 +133,9 @@ def main() -> None:
         ".github/workflows/release.yml",
         ".github/workflows/branch-cleanup.yml",
         ".github/workflows/post-gate-branch-cleanup.yml",
+        ".github/workflows/release-verification.yml",
     ):
-        require(caller, "PRODKIT_RUNNER_JSON", "control-plane trusted-runner policy")
+        require(caller, 'runner_json: \'"ubuntu-latest"\'', "control-plane self hosted policy")
 
     require(
         ".github/workflows/trusted-release-proof.yml",
@@ -204,21 +205,39 @@ def main() -> None:
     reject(gated, "/git/refs/", "gated cleanup must delegate deletion")
     reject(gated, 'method="DELETE"', "gated cleanup must delegate deletion")
 
+    require(
+        "templates/caller/branch-cleanup.yml",
+        "PRODKIT_RUNNER_JSON",
+        "generated branch cleanup runner policy",
+    )
+    require(
+        ".github/workflows/branch-cleanup.yml",
+        'runner_json: \'"ubuntu-latest"\'',
+        "control-plane branch cleanup runner policy",
+    )
     for caller in (
         "templates/caller/branch-cleanup.yml",
         ".github/workflows/branch-cleanup.yml",
     ):
         require(caller, "workflow_dispatch:", "branch cleanup authorization")
         require(caller, "contents: write", "branch cleanup mutation authority")
-        require(caller, "PRODKIT_RUNNER_JSON", "branch cleanup runner policy")
         reject(caller, "issue_comment:", "branch cleanup authorization")
 
+    require(
+        "templates/caller/post-gate-branch-cleanup.yml",
+        "PRODKIT_RUNNER_JSON",
+        "generated post-gate cleanup runner policy",
+    )
+    require(
+        ".github/workflows/post-gate-branch-cleanup.yml",
+        'runner_json: \'"ubuntu-latest"\'',
+        "control-plane post-gate cleanup runner policy",
+    )
     for caller in (
         "templates/caller/post-gate-branch-cleanup.yml",
         ".github/workflows/post-gate-branch-cleanup.yml",
     ):
         require(caller, "workflow_run:", "post-gate cleanup trigger")
-        require(caller, "PRODKIT_RUNNER_JSON", "post-gate cleanup runner policy")
         reject(caller, "contents: write", "post-gate cleanup must delegate mutation")
 
     require(
