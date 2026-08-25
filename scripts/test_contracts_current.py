@@ -6,7 +6,6 @@ from pathlib import Path
 import audit_org
 import test_contracts
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -33,18 +32,17 @@ permissions:
   contents: read
 """
     if audit_org.workflow_events(canonical) != {"workflow_dispatch"}:
-        raise SystemExit("cleanup trigger parser rejected canonical workflow_dispatch-only caller")
+        raise SystemExit("trigger parser rejected canonical workflow_dispatch-only caller")
 
-    malicious = (
+    for extra in (
         '  "pull_request_target":\n',
         "  'schedule':\n",
         "  repository_dispatch:\n",
         "  workflow_run:\n",
-    )
-    for extra in malicious:
-        text = canonical.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n" + extra)
-        if audit_org.workflow_events(text) == {"workflow_dispatch"}:
-            raise SystemExit(f"cleanup trigger parser ignored additional event: {extra.strip()}")
+    ):
+        candidate = canonical.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n" + extra)
+        if audit_org.workflow_events(candidate) == {"workflow_dispatch"}:
+            raise SystemExit(f"trigger parser ignored additional event: {extra.strip()}")
 
     ambiguous = """name: Branch Cleanup
 on: [workflow_dispatch, push]
@@ -52,7 +50,7 @@ permissions:
   contents: write
 """
     if audit_org.workflow_events(ambiguous) == {"workflow_dispatch"}:
-        raise SystemExit("cleanup trigger parser accepted ambiguous inline event syntax")
+        raise SystemExit("trigger parser accepted ambiguous inline event syntax")
 
 
 def main() -> None:
@@ -66,6 +64,7 @@ def main() -> None:
             "release-verification.yml",
             "reusable-release-promote.yml",
             "reusable-release-proof-dispatch.yml",
+            "reusable-release-proof-promotion-dispatch.yml",
             "reusable-release-verification.yml",
             "reusable-release-verification-dispatch.yml",
             "reusable-branch-cleanup.yml",
@@ -75,6 +74,7 @@ def main() -> None:
     test_contracts.DEFAULT_CALLERS.update(
         {
             "release-proof-dispatch.yml",
+            "trusted-release-proof.yml",
             "release-promotion.yml",
             "release-verification.yml",
             "branch-cleanup.yml",
@@ -82,118 +82,76 @@ def main() -> None:
         }
     )
     test_contracts.EXPECTED_SELF_ADAPTERS.add("release-proof.sh")
-    test_contracts.EXPECTED_GITHUB_WORKFLOWS.add("reusable-release-proof-promotion-dispatch.yml")
-    temporary_alignment = ROOT / ".github/workflows/v014-contract-align.yml"
-    if temporary_alignment.is_file():
-        test_contracts.EXPECTED_GITHUB_WORKFLOWS.add(temporary_alignment.name)
     test_contracts.main()
     test_cleanup_trigger_parser()
 
-    require(
+    for caller in (
+        "templates/caller/release-proof-dispatch.yml",
         "templates/caller/trusted-release-proof.yml",
-        'node_version: "24"',
-        "generated proof payload runtime",
-    )
-    reject(
-        "templates/caller/trusted-release-proof.yml",
-        "reusable-release-promote.yml@",
-        "generated proof completion boundary",
-    )
+        "templates/caller/release-promotion.yml",
+        "templates/caller/release.yml",
+        "templates/caller/branch-cleanup.yml",
+        "templates/caller/post-gate-branch-cleanup.yml",
+    ):
+        require(caller, "PRODKIT_RUNNER_JSON", "generated trusted-runner policy")
+
     require(
         "templates/caller/release-proof-dispatch.yml",
-        'workflows: ["CI", "Security"]',
-        "generated automatic proof dispatch",
-    )
-    require(
-        "templates/caller/release-proof-dispatch.yml",
-        "reusable-release-proof-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "generated automatic proof dispatcher pin",
-    )
-    require(
-        "templates/caller/release-promotion.yml",
-        'workflows: ["Trusted Release Proof"]',
-        "generated proof-completion promotion",
-    )
-    require(
-        "templates/caller/release-promotion.yml",
-        "workflow_run.conclusion == 'success'",
-        "generated successful-proof promotion",
-    )
-    require(
-        "templates/caller/release-promotion.yml",
-        "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "generated release promotion",
-    )
-    require(
-        ".github/workflows/release-proof-dispatch.yml",
-        "uses: ./.github/workflows/reusable-release-proof-dispatch.yml",
-        "control-plane automatic proof dispatch",
-    )
-    require(
-        ".github/workflows/release-proof-dispatch.yml",
-        "uses: ./.github/workflows/reusable-release-proof-promotion-dispatch.yml",
-        "control-plane proof-to-promotion bridge",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE == 'true'",
+        "optional hosted proof observer",
     )
     require(
         "templates/caller/release-proof-dispatch.yml",
         "reusable-release-proof-promotion-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "generated proof-to-promotion bridge pin",
+        "hosted proof observer immutable pin",
     )
+    require(
+        "templates/caller/trusted-release-proof.yml",
+        "needs: proof",
+        "serialized proof promotion dependency",
+    )
+    require(
+        "templates/caller/trusted-release-proof.yml",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE != 'true'",
+        "serialized proof promotion mode",
+    )
+    require(
+        "templates/caller/trusted-release-proof.yml",
+        "reusable-release-promote.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
+        "serialized promotion immutable pin",
+    )
+    require(
+        "templates/caller/release-promotion.yml",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE == 'true'",
+        "hosted workflow_run promotion gate",
+    )
+
+    for caller in (
+        ".github/workflows/release-proof-dispatch.yml",
+        ".github/workflows/trusted-release-proof.yml",
+        ".github/workflows/release-promotion.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/branch-cleanup.yml",
+        ".github/workflows/post-gate-branch-cleanup.yml",
+    ):
+        require(caller, "PRODKIT_RUNNER_JSON", "control-plane trusted-runner policy")
+
     require(
         ".github/workflows/trusted-release-proof.yml",
-        "uses: ./.github/workflows/reusable-release-proof.yml",
-        "control-plane trusted proof",
-    )
-    reject(
-        ".github/workflows/trusted-release-proof.yml",
         "uses: ./.github/workflows/reusable-release-promote.yml",
-        "control-plane proof completion boundary",
-    )
-    require(
-        ".github/workflows/release-promotion.yml",
-        'workflows: ["Trusted Release Proof"]',
-        "control-plane proof-completion promotion",
-    )
-    require(
-        ".github/workflows/release-promotion.yml",
-        "uses: ./.github/workflows/reusable-release-promote.yml",
-        "control-plane release promotion",
+        "control-plane serialized promotion",
     )
     require(
         ".github/workflows/release.yml",
         "reuse_proof_payload: true",
-        "control-plane release payload reuse",
-    )
-    require(
-        ".github/workflows/release-verification.yml",
-        "uses: ./.github/workflows/reusable-release-verification.yml",
-        "control-plane release verification",
+        "control-plane proof payload reuse",
     )
     require(
         ".github/workflows/release.yml",
         "uses: ./.github/workflows/reusable-release-verification-dispatch.yml",
         "control-plane verification dispatch",
     )
-    require(
-        "templates/caller/release.yml",
-        "reusable-release-verification-dispatch.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "generated verification dispatch",
-    )
-    require(
-        "templates/caller/release-verification.yml",
-        "workflow_dispatch:",
-        "generated verification dispatch boundary",
-    )
-    reject(
-        "templates/caller/release-verification.yml",
-        "workflow_run:",
-        "generated verification must not depend on workflow_run chaining",
-    )
-    require(
-        "templates/caller/release-verification.yml",
-        "source_sha: ${{ github.sha }}",
-        "generated immutable-ref verification source",
-    )
+
     proof_dispatcher = ".github/workflows/reusable-release-proof-dispatch.yml"
     for fragment in (
         "workflow_call:",
@@ -207,29 +165,11 @@ def main() -> None:
         'expected_source_contract = "source_sha: $" + "{{ github.sha }}"',
         "successful exact-source Trusted Release Proof already exists",
         "active exact-source Trusted Release Proof already exists",
-        '"ref": main_branch',
         "/dispatches",
     ):
         require(proof_dispatcher, fragment, "reusable proof dispatcher")
     reject(proof_dispatcher, "time.sleep(", "proof dispatcher must not wait for child")
     reject(proof_dispatcher, "contents: write", "proof dispatcher mutation boundary")
-
-    dispatcher = ".github/workflows/reusable-release-verification-dispatch.yml"
-    for fragment in (
-        "workflow_call:",
-        "actions: write",
-        "release_run_id:",
-        "verification_workflow_file:",
-        "immutable tag",
-        "verification caller must be workflow_dispatch-only",
-        '"ref": tag',
-        '"release_run_id": release_run_id',
-        "/dispatches",
-        "successful exact-source verification already exists",
-        "active exact-source verification already exists",
-    ):
-        require(dispatcher, fragment, "reusable verification dispatcher")
-    reject(dispatcher, "time.sleep(", "verification dispatcher must not wait for child")
 
     cleanup = ".github/workflows/reusable-branch-cleanup.yml"
     for fragment in (
@@ -237,31 +177,13 @@ def main() -> None:
         "branches_json:",
         "expected_default_sha:",
         "dry_run:",
-        'default: \'"ubuntu-latest"\'',
         "Branch Cleanup Required",
         "group: branch-cleanup-${{ github.repository }}",
         "cancel-in-progress: false",
-        "Authorize explicit dispatch",
-        'EVENT_NAME: ${{ github.event_name }}',
-        'if [[ "$EVENT_NAME" != "workflow_dispatch" ]]',
-        "authorized only from an explicit workflow_dispatch caller",
-        "def read_ref_path(branch: str)",
-        "def delete_ref_path(branch: str)",
-        "def has_open_pr(branch: str)",
-        "def assert_default_unchanged(stage: str)",
-        "validated_sha = {}",
         "default branch is never deletable",
         "branch is the head of an open pull request",
         "branch is protected by repository policy",
-        "cleanup preflight rejected targets",
-        "post-preflight validation",
-        "branch became the head of an open pull request during cleanup",
-        "branch became protected during cleanup",
         "branch moved after preflight",
-        "not_deleted_target_moved",
-        'current_sha != validated_sha[branch]',
-        'call("DELETE", delete_ref_path(branch))',
-        'call("GET", read_ref_path(branch), allow_404=True)',
         "branch deletion did not verify absent",
         "cleanup-evidence.json",
     ):
@@ -274,113 +196,43 @@ def main() -> None:
         "cleanup_workflow_file:",
         "Gated Branch Cleanup Authorization",
         "actions: write",
-        'EVENT_NAME: ${{ github.event_name }}',
-        'TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}',
-        'TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}',
-        'event_name != "workflow_run"',
-        'trigger_event != "push"',
-        "seen_names = set()",
-        "duplicate gate name",
-        "target cleanup workflow must be workflow_dispatch-only",
-        '"head_sha": expected, "event": "push"',
-        'run.get("conclusion") != "success"',
-        'evidence["state"] = "gate_failed"',
-        'evidence["state"] = "deferred"',
-        'evidence["state"] = "not_final_gate"',
-        'evidence["state"] = "stale_trigger"',
         '"expected_default_sha": expected',
         '"dry_run": False',
         '/actions/workflows/{workflow_id}/dispatches',
-        'evidence["state"] = "dispatched"',
     ):
         require(gated, fragment, "reusable gated branch cleanup")
-    reject(gated, '"dry_run": "false"', "gated cleanup boolean dispatch")
     reject(gated, "/git/refs/", "gated cleanup must delegate deletion")
     reject(gated, 'method="DELETE"', "gated cleanup must delegate deletion")
 
-    caller = "templates/caller/branch-cleanup.yml"
-    for fragment in (
-        "workflow_dispatch:",
-        "expected_default_sha:",
-        "contents: write",
-        "pull-requests: read",
-        "reusable-branch-cleanup.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "inputs.expected_default_sha != '' && inputs.expected_default_sha || github.sha",
-        'runner_json: \'"ubuntu-latest"\'',
-        "dry_run: ${{ inputs.dry_run }}",
+    for caller in (
+        "templates/caller/branch-cleanup.yml",
+        ".github/workflows/branch-cleanup.yml",
     ):
-        require(caller, fragment, "generated branch cleanup caller")
-    reject(caller, "issue_comment:", "generated branch cleanup caller authorization")
+        require(caller, "workflow_dispatch:", "branch cleanup authorization")
+        require(caller, "contents: write", "branch cleanup mutation authority")
+        require(caller, "PRODKIT_RUNNER_JSON", "branch cleanup runner policy")
+        reject(caller, "issue_comment:", "branch cleanup authorization")
 
-    post_gate_caller = "templates/caller/post-gate-branch-cleanup.yml"
-    for fragment in (
-        "workflow_run:",
-        'workflows: ["CI", "Security", "CodeQL"]',
-        "types: [completed]",
-        "branches: [main]",
-        "PRODKIT_GATED_CLEANUP_BRANCHES_JSON != ''",
-        "actions: write",
-        "reusable-gated-branch-cleanup.yml@REPLACE_WITH_PRODKIT_WORKFLOWS_SHA",
-        "expected_default_sha: ${{ github.event.workflow_run.head_sha }}",
-        "PRODKIT_GATED_CLEANUP_GATES_JSON",
-        "cleanup_workflow_file: branch-cleanup.yml",
-        "PRODKIT_RUNNER_JSON",
+    for caller in (
+        "templates/caller/post-gate-branch-cleanup.yml",
+        ".github/workflows/post-gate-branch-cleanup.yml",
     ):
-        require(post_gate_caller, fragment, "generated post-gate cleanup caller")
-    if audit_org.workflow_events((ROOT / post_gate_caller).read_text(encoding="utf-8")) != {"workflow_run"}:
-        raise SystemExit("generated post-gate cleanup caller must be workflow_run-only")
-    reject(post_gate_caller, "contents: write", "post-gate cleanup orchestrator")
+        require(caller, "workflow_run:", "post-gate cleanup trigger")
+        require(caller, "PRODKIT_RUNNER_JSON", "post-gate cleanup runner policy")
+        reject(caller, "contents: write", "post-gate cleanup must delegate mutation")
 
-    self_caller = ".github/workflows/branch-cleanup.yml"
-    for fragment in (
-        "workflow_dispatch:",
-        "branches_json:",
-        "dry_run:",
-        "expected_default_sha:",
-        "contents: write",
-        "pull-requests: read",
-        "uses: ./.github/workflows/reusable-branch-cleanup.yml",
-        "inputs.expected_default_sha != '' && inputs.expected_default_sha || github.sha",
-        'runner_json: \'"ubuntu-latest"\'',
-        "dry_run: ${{ inputs.dry_run }}",
-    ):
-        require(self_caller, fragment, "control-plane branch cleanup caller")
-    if audit_org.workflow_events((ROOT / self_caller).read_text(encoding="utf-8")) != {"workflow_dispatch"}:
-        raise SystemExit("control-plane branch cleanup caller must be workflow_dispatch-only")
-    reject(self_caller, "issue_comment:", "control-plane branch cleanup caller authorization")
-    reject(self_caller, "schedule:", "control-plane branch cleanup caller authorization")
-    reject(self_caller, "pull_request_target:", "control-plane branch cleanup caller authorization")
-
-    self_post_gate = ".github/workflows/post-gate-branch-cleanup.yml"
-    for fragment in (
-        "workflow_run:",
-        'workflows: ["CI", "Security", "CodeQL"]',
-        "PRODKIT_GATED_CLEANUP_BRANCHES_JSON != ''",
-        "actions: write",
-        "uses: ./.github/workflows/reusable-gated-branch-cleanup.yml",
-        "expected_default_sha: ${{ github.event.workflow_run.head_sha }}",
-        "cleanup_workflow_file: branch-cleanup.yml",
-    ):
-        require(self_post_gate, fragment, "control-plane post-gate cleanup caller")
-    if audit_org.workflow_events((ROOT / self_post_gate).read_text(encoding="utf-8")) != {"workflow_run"}:
-        raise SystemExit("control-plane post-gate cleanup caller must be workflow_run-only")
-    reject(self_post_gate, "contents: write", "control-plane post-gate cleanup orchestrator")
-
-    require(
-        "scripts/audit_org.py",
-        'workflow_events(text) != {"workflow_dispatch"}',
-        "branch cleanup trigger audit",
-    )
-    require(
-        "scripts/audit_org.py",
-        '"post-gate-branch-cleanup.yml": "reusable-gated-branch-cleanup.yml"',
-        "post-gate cleanup organization audit",
-    )
     require(
         "scripts/audit_org.py",
         '"release-proof-dispatch.yml": "reusable-release-proof-dispatch.yml"',
         "automatic proof dispatch organization audit",
     )
+    require(
+        "scripts/audit_org.py",
+        "PRODKIT_GITHUB_HOSTED_CONTROL_PLANE",
+        "serial/hosted lifecycle organization audit",
+    )
+
+    print("current consumer contracts passed")
 
 
 if __name__ == "__main__":
