@@ -1,157 +1,99 @@
 # ProdKit workflow lifecycle
 
-`prodkit-workflows` centralizes reusable workload implementation. Consumer repositories retain thin lifecycle callers, choose their runner directly, and own product-specific adapters/release metadata.
+`prodkit-workflows` centralizes reusable workload implementation. Consumer repositories keep thin callers, choose their runner directly, and own product-specific adapters and release metadata.
 
 ## Lifecycle
 
-| Stage | Trigger | Required purpose | Normal evidence |
-| --- | --- | --- | --- |
-| Pull request | `pull_request` | Correctness/security feedback before merge | `CI`, `Security`, optional `CodeQL` |
-| Main branch | `push` to `main` | Certify the actual merge SHA | successful exact-SHA `CI` and `Security` |
-| Release proof authorization | `workflow_run` after main gate completion | Detect an unpublished canonical version and dispatch proof only after all required exact-SHA gates are green | bounded `Release Proof Dispatch` evidence |
-| Release candidate | automatically dispatched `workflow_dispatch` | Verify permanent gates, run release-only acceptance, build the promotable payload once | completed successful `Trusted Release Proof` + proof-produced payload receipt |
-| Promotion | `workflow_run` after completed successful `Trusted Release Proof` | Dispatch the proven version without racing proof completion or waiting for publication | bounded idempotent Release dispatch |
-| Publication | promoted `workflow_dispatch` | Import/seal the proof-produced payload, optionally attest, and publish behind the `release` environment | immutable tag + Release + checksums/SBOM; optional GitHub provenance |
-| Verification | `workflow_dispatch` on immutable release tag | Independently verify immutable publication without chained-workflow suppression | exact tag/source/metadata/assets/checksums |
-| Post-gate cleanup authorization | dormant `workflow_run` caller | Authorize one reviewed exact stale-branch set only after configured exact-SHA gates | gate run IDs + bounded Branch Cleanup dispatch |
-| Branch cleanup | explicit `workflow_dispatch` | Validate and delete only exact reviewed refs | SHA-bound cleanup evidence + verified ref absence |
-| Metadata repair | canonical metadata push or explicit dispatch | Repair mutable Release presentation only | verified name/body repair with immutable state unchanged |
+| Stage | Trigger | Purpose |
+| --- | --- | --- |
+| Pull request | `pull_request` | CI, Security, optional CodeQL feedback before merge |
+| Exact main | `push` to `main` | Certify the actual merged SHA |
+| Release proof authorization | `workflow_run` after permanent gates | Detect an unpublished canonical version and dispatch proof |
+| Trusted Release Proof | `workflow_dispatch` | Recheck exact-source gates, run release-only acceptance, build promotable payload once |
+| Promotion | dependent job after proof by default | Dispatch Release only after proof succeeds |
+| Publication | `workflow_dispatch` | Import/seal proof payload and publish behind optional `release` environment approval |
+| Verification | `workflow_dispatch` on immutable tag | Independently verify source, metadata, assets and checksums |
+| Cleanup authorization | dormant `workflow_run` | Authorize a reviewed exact branch set after configured gates |
+| Branch Cleanup | `workflow_dispatch` | Revalidate and delete only exact reviewed refs |
+| Metadata repair | explicit/current metadata path | Repair mutable Release presentation without changing immutable payload identity |
 
 ## Runner ownership
 
-A caller passes `runner_json` directly to the reusable workload. New generated callers do not invoke a runner-policy workflow first.
+Reusable workloads accept `runner_json`; callers choose the execution target. Trusted generated work defaults to `["self-hosted","Linux","X64"]` and may be overridden by the non-secret repository variable `PRODKIT_RUNNER_JSON`.
 
-For trusted workloads the default target is `["self-hosted","Linux","X64"]`; `PRODKIT_RUNNER_JSON` may replace that JSON in generated generic callers. CI/Security fork PRs are forced to GitHub-hosted execution.
+Fork-originated CI/Security pull requests remain isolated from persistent trusted runners. There is no automatic runner failover: runner availability is infrastructure state, not a reason to switch trust boundaries after a workload has started.
 
-This intentionally avoids hosted probes, resolver jobs, destructive workspace preflight, and automatic runner switching. A workload gets one execution target and either succeeds or fails.
+Starting in v0.1.6, the normal control plane no longer requires GitHub-hosted capacity. Release proof dispatch, serialized promotion, Release verification dispatch, Branch Cleanup, and Post-Gate Branch Cleanup all use the configured trusted runner. Installations that deliberately want the v0.1.5-style hosted proof observer may set `PRODKIT_GITHUB_HOSTED_CONTROL_PLANE=true`.
 
-Branch Cleanup defaults to `ubuntu-latest`. Post-Gate Branch Cleanup also prefers `ubuntu-latest` but may honor `PRODKIT_RUNNER_JSON` for trusted private-repository control-plane execution where hosted jobs are unavailable. Release Proof Dispatch is intentionally GitHub-hosted because it performs only short read/dispatch authorization and must not occupy the trusted product runner while starting proof.
+## Single-runner non-blocking rule
 
-### Single-runner non-blocking rule
+The lifecycle must remain correct with one trusted self-hosted runner. A job occupying that runner must never dispatch another workflow that also needs the runner and then poll, sleep, or wait for the child. That pattern can deadlock indefinitely because the parent owns the only execution slot required by the child.
 
-The lifecycle must remain correct with only one trusted self-hosted runner. A job occupying that runner must never dispatch another workflow that also needs the runner and then poll, sleep, or otherwise wait for the child to finish. Such a parent owns the only execution slot its child requires and can deadlock the release indefinitely.
-
-Cross-workflow sequencing therefore uses completion and dispatch boundaries:
+The v0.1.6 normal path therefore uses **serialized proof-to-promotion** rather than a polling bridge:
 
 1. exact-main CI/Security/optional CodeQL complete independently;
-2. `Release Proof Dispatch` observes CI/Security completion, rechecks current-main identity and all required exact-SHA gates, recognizes release intent only when the manifest's canonical version is not already tagged, dispatches `Trusted Release Proof`, and exits without waiting;
-3. `Trusted Release Proof` acquires the trusted runner, performs release-specific acceptance, builds the proof-produced payload once, completes successfully, and releases the runner;
-4. the separate `Release Promotion` caller starts from that completed proof workflow's `workflow_run` event, derives the release version from the exact proof `head_sha`, dispatches Release idempotently, and exits;
-5. Release acquires a runner and advances through short sequential release jobs; the protected `release` environment is the human publication approval boundary when required reviewers are configured;
-6. Release finishes publication, then a short GitHub-hosted verification-dispatch job validates the immutable tag/source handoff and dispatches `Release Verification` at that immutable tag without waiting for the child. This **verification-dispatch boundary** avoids GitHub’s chained `workflow_run` depth limit;
-7. Post-Gate Branch Cleanup, when activated for maintenance, verifies all configured exact-SHA gates, dispatches Branch Cleanup once, and exits without waiting for deletion;
-8. the dispatch-only Branch Cleanup workflow performs guarded deletion.
+2. `Release Proof Dispatch` verifies current-main identity, release intent and every configured exact-SHA gate, dispatches `Trusted Release Proof`, then exits;
+3. `Trusted Release Proof` runs proof on the trusted runner, produces the proof-owned promotable payload, completes, and releases the runner;
+4. a separate `promote proven release` job in the same caller has `needs: proof`, starts only after proof success, invokes the central promotion reusable, dispatches Release idempotently, and exits;
+5. Release imports the proof-produced payload, seals it, optionally attests it, and publishes behind the protected `release` environment when configured;
+6. after Release succeeds, a short verification-dispatch job validates the immutable handoff and dispatches `Release Verification` without waiting for the child;
+7. Release Verification independently validates the immutable transaction and may dispatch canonical Branch Cleanup, but it cannot delete refs itself;
+8. Branch Cleanup is the only destructive branch-mutation authority.
 
-The **proof-completion boundary** remains mandatory: publication authorization searches only completed successful proof runs, so dispatching Release from a job inside an in-progress proof workflow is a race and is forbidden.
+This preserves the **proof-completion boundary**: promotion cannot begin until proof has completed successfully. It also preserves the **verification-dispatch boundary** that avoids deep chained `workflow_run` suppression.
 
-The **automatic proof-dispatch boundary** deliberately leaves `Trusted Release Proof` itself `workflow_dispatch` only. That keeps its exact-source event contract unchanged while allowing release evidence generation to start automatically after main gates are complete.
-
-The **cleanup authorization boundary** follows the same non-blocking principle: the post-gate authorizer never performs deletion itself and never waits for the dispatched Branch Cleanup run.
-
-Long-running controller/orchestrator workflows are not part of the generated default lifecycle.
-
-## Pull request and main
-
-Normal CI and Security use compact reusable workflows. Each renders one stable workload job:
-
-- `ci / CI Required`
-- `security / Security Required`
-
-Compatibility and scanning dimensions execute as steps, and the final aggregate verifier fails closed if any enabled control failed. Intermediate steps may use `continue-on-error` to collect later evidence; the aggregate evaluates their recorded `outcome`, not only their visual step presentation.
+The optional hosted observer remains available only when `PRODKIT_GITHUB_HOSTED_CONTROL_PLANE=true`. In that mode, `Release Proof Dispatch` may also invoke `reusable-release-proof-promotion-dispatch.yml` on `ubuntu-latest`; the observer waits within a bounded timeout for the exact proof and explicitly dispatches Release Promotion. It must never run on the same single trusted runner that proof needs.
 
 ## Automatic release proof authorization
 
-`Release Proof Dispatch` is a permanent `workflow_run` control-plane caller listening for `CI` and `Security` completions on `main`. It does not itself certify or publish anything.
+`Release Proof Dispatch` is a permanent `workflow_run` caller on main-gate completion. It has `actions: write` so it can dispatch proof and `contents: read`; it cannot tag, publish, edit repository content, or delete refs.
 
-The reusable dispatcher requires the trigger SHA to still equal the current default-branch SHA. It derives one consistent SemVer from the version sources declared in `.prodkit/release.json`. A canonical version whose immutable tag already resolves to current main means there is no new release intent, so the run exits successfully without dispatching proof. If that canonical tag exists on another source, the dispatcher fails closed.
+The reusable dispatcher requires the trigger SHA to remain current `main`, derives one consistent SemVer from `.prodkit/release.json`, and treats an existing canonical tag on current main as no new release intent. A conflicting tag on another source fails closed.
 
-The dispatcher then verifies every required exact-SHA push workflow. A required gate that is missing or still active causes a successful `deferred` outcome; the later gate completion provides another authorization event. A completed non-success gate fails closed. The caller deliberately forwards both successful and unsuccessful gate-completion events so failure evidence is preserved regardless of completion order. This means the first of CI/Security to finish never creates a false failed proof run, while the final successful gate can start proof immediately and a final failed gate records an explicit authorization failure.
+Required exact-SHA permanent gates are supplied by the consumer. The generated baseline is CI + Security; repositories may strengthen that set, for example with CodeQL. Missing or active gates defer safely. A completed non-success gate fails closed. Existing active or successful exact-source proof runs suppress duplicates.
 
-Before dispatch, the authorizer validates the repository `Trusted Release Proof` caller at the exact source. That caller must remain `workflow_dispatch` only and must certify `source_sha: ${{ github.sha }}`. Existing active or successful exact-source proof runs suppress duplicates. Current-main identity is checked again immediately before dispatch.
+Before dispatch, the authorizer verifies that `Trusted Release Proof` remains `workflow_dispatch` only and certifies `source_sha: ${{ github.sha }}`.
 
-The dispatcher uses `actions: write` only to invoke the proof workflow and remains `contents: read`; it cannot tag, publish, edit files, or delete refs.
+## Trusted Release Proof
 
-## Release candidate
+Trusted Release Proof remains dispatch-only. It certifies the exact current-main source, verifies permanent gate evidence, runs only release-specific repository acceptance, and builds the repository-owned promotable payload once.
 
-`Trusted Release Proof` remains `workflow_dispatch` only and certifies `${{ github.sha }}` from the branch/ref on which it is dispatched. In the normal v0.1.4+ lifecycle, `Release Proof Dispatch` performs that dispatch automatically on `main`; operators do not click **Run workflow** or paste a source SHA.
+The proof payload is content-addressed by its manifest and digests. Release reuses that exact payload rather than rebuilding an independent version of the same artifacts.
 
-Manual proof dispatch is recovery-only after verifying that no active or successful automatic exact-source proof exists. Trusted Release Proof itself does not run on every pull-request commit, ordinary main push, or tag event; the automatic dispatcher starts it only when exact-main gates are green and the canonical version is unpublished.
+In the default v0.1.6 topology, the proof caller contains a second job with `needs: proof`. That job has promotion authority (`actions: write`) but no repository-content mutation authority, and delegates all promotion rules to `reusable-release-promote.yml`.
 
-The reusable proof first verifies that the SHA is still current `main` and that permanent exact-SHA `CI` and `Security` push workflows already succeeded. It **does not rerun those matrices**. The repository-owned `.prodkit/workflows/release-proof.sh` is therefore reserved for genuinely release-specific acceptance not already represented by permanent CI/Security evidence.
+## Promotion
 
-For canonical consumers, the reusable proof executes the repository-owned release-build adapter once, writes repository-owned artifacts beneath `release-payload/`, records names/sizes/SHA-256 digests in `release-payload.json`, proves tracked source remained unchanged, and uploads the whole proof artifact. This proof-produced payload is the promotable payload; Release does not rebuild it.
+`reusable-release-promote.yml` rechecks current-main identity, resolves one canonical version, rejects conflicting tags, avoids duplicate active Release dispatches, and dispatches Release without polling publication.
 
-The proof workflow itself does not dispatch Release. Only after the enclosing `Trusted Release Proof` run reaches `completed` with `success` does the separate `Release Promotion` caller run. It passes `${{ github.event.workflow_run.head_sha }}` to `reusable-release-promote.yml`, which rechecks current-main identity, derives one consistent SemVer from `.prodkit/release.json`, avoids a duplicate dispatch while an exact-source Release run is actively queued/running, otherwise dispatches Release, and exits immediately without waiting.
+`Release Promotion` remains available as a dual-entry recovery/compatibility caller. Its `workflow_run` path is active only when `PRODKIT_GITHUB_HOSTED_CONTROL_PLANE=true`; `workflow_dispatch` remains an explicit recovery handoff. The central publisher independently rechecks exact proof evidence, so promotion delivery cannot weaken publication authorization.
 
-An existing tag or GitHub Release is not closure evidence by itself. If the tag already resolves to the proven SHA, promotion may re-dispatch the idempotent Release workflow so the publisher can verify or resume the exact release transaction without rebuilding already-complete stages.
+## Publication and approval
 
-Ordinary main pushes do not automatically become releases when their canonical version is already represented by its immutable tag. The unpublished canonical version in the merged source is the release-intent signal.
+Release remains dispatch-only. The reusable publisher validates exact current-main identity, permanent exact-SHA gates, a completed successful exact-source Trusted Release Proof, version sources, release notes and manifest consistency.
 
-## Publication and human approval
+Publication is checkpointed into prepare, build/seal, optional attestation, and publish stages. The proof-produced payload is downloaded from the exact successful proof run, verified, augmented with source/SBOM evidence, sealed by `release-metadata.json` and `SHA256SUMS`, and then published behind the configured `release` environment.
 
-`Release` remains dispatch-only, but normal lifecycle dispatch is owned by the proof-completion `Release Promotion` workflow. The release target is `${{ github.sha }}` from the dispatch on `main`.
+GitHub Artifact Attestations are optional and capability-dependent. When enabled they are fail-closed, but source identity, proof payload digests, SBOM generation, checksums and publication verification do not depend on attestations.
 
-The consumer Release caller is deliberately thin: it passes the exact source and authoritative `Trusted Release Proof` workflow path to `reusable-release.yml`. It does not duplicate GitHub API proof-gate code. The reusable publisher centrally requires a completed successful proof dispatch for the exact SHA and independently rechecks successful `push` runs of `CI` and `Security` for that same SHA. Those are cheap authorization checks, not workload reruns.
-
-Human approval belongs at the protected `release` environment immediately before publication mutation when repository policy requires it. Evidence generation can therefore proceed automatically, while the actual publication boundary remains reviewer-controlled.
-
-Publication is checkpointed at job boundaries:
-
-1. **prepare** — validate current-main identity, permanent CI/Security evidence, exact completed-proof authorization, manifest/version/notes, and any already-published release; capture the exact successful proof run ID;
-2. **build/seal** — download the proof artifact from that exact run, verify `release-payload.json`, import the proof-produced payload, add central source/SBOM evidence, seal everything with `release-metadata.json` and `SHA256SUMS`, and upload one sealed workflow artifact;
-3. **attest** — optionally download and attest that sealed payload;
-4. **publish** — behind the configured `release` environment, download the same sealed payload, create or recover the immutable tag/draft Release, upload only missing or mismatched assets, verify the draft, and publish.
-
-The sealed workflow artifact is the retry boundary. When a late job fails, operators should use GitHub **Re-run failed jobs** rather than restarting the whole workflow. GitHub re-runs failed jobs and dependent jobs while successful earlier jobs remain complete, so a failed attestation or publication does not rerun proof, regenerate the repository payload, or rebuild a successful sealed payload.
-
-Draft recovery is incremental. Correct existing draft assets are retained; only unexpected or checksum-mismatched assets are removed and re-uploaded. A fully published release is verified during preflight and treated as idempotently complete.
-
-GitHub Artifact Attestations are optional because feature availability depends on repository visibility and GitHub organization plan. The reusable publisher defaults `attest` to `false`. A consumer may explicitly set `attest: true` only when the feature is available; once enabled, attestation failure is release-fatal. Exact-source gates, proof-produced payload digests, SBOM generation, `SHA256SUMS`, sealed-payload verification, and draft read-back remain independent of GitHub Artifact Attestations.
-
-The publisher verifies the draft transaction before making it public. Post-publication verification is intentionally owned by the independent `Release Verification` workflow rather than duplicated inside the publisher.
-
-Tag creation never reruns the proof and a product/release failure never switches runners.
+Late failures should use GitHub **Re-run failed jobs** so successful earlier publication stages are reused instead of rebuilding a different payload.
 
 ## Independent verification
 
-The generated `Release Verification` caller is `workflow_dispatch` only. The parent Release workflow invokes `reusable-release-verification-dispatch.yml` after publication succeeds; the dispatcher validates the exact parent Release run, immutable `vX.Y.Z` tag and published target, then dispatches verification on that tag and exits immediately. The verification caller derives `source_sha` from `${{ github.sha }}` at the immutable tag and forwards only the parent Release run ID for provenance binding.
+Release dispatches `Release Verification` only after publication succeeds. The dispatch boundary validates the parent Release run and immutable tag/source handoff, then exits.
 
-This **verification-dispatch boundary** avoids another chained `workflow_run` hop. Verification is read-only. It derives the version, notes path, and expected Release name from immutable source metadata; recursively resolves annotated/lightweight tags to the exact source SHA; verifies draft/prerelease/target metadata; requires canonical Release notes; requires the remote asset set to match `SHA256SUMS` exactly; and verifies GitHub asset digests or downloads/hashes assets when the API digest is unavailable.
+Release Verification runs from the immutable tag and verifies canonical source identity, Release metadata/body, publication state, remote asset set, checksums and asset digests. It has `actions: write` only because successful verification may dispatch canonical cleanup. It remains `contents: read` and cannot delete branches or alter repository content.
 
-Because verification is dispatched only after reusable publication succeeds, and the dispatcher itself is short and non-blocking, it cannot hold the runner needed by publication or wait on the verification child.
+## Verified cleanup
 
-## Post-gate branch cleanup
+Release Verification may identify the same-repository merged release/hotfix PR associated with the immutable release source and dispatch Branch Cleanup only after the publication transaction verifies.
 
-`Post-Gate Branch Cleanup` is a permanent dormant `workflow_run` authorization caller. It does nothing while `PRODKIT_GATED_CLEANUP_BRANCHES_JSON` is empty.
+`Post-Gate Branch Cleanup` is a separate dormant maintenance authorizer controlled by `PRODKIT_GATED_CLEANUP_BRANCHES_JSON`. It verifies exact current-main identity and configured exact-SHA gates, then dispatches Branch Cleanup without deleting refs itself.
 
-When activated with a reviewed exact branch list, the reusable authorizer requires the triggering run to originate from a default-branch `push`, requires the trigger `head_sha` to equal the current default-branch SHA, validates the target cleanup workflow remains `workflow_dispatch` only, and verifies configured required exact-SHA push workflows by immutable workflow path.
-
-The default required gates are CI and Security. `PRODKIT_GATED_CLEANUP_GATES_JSON` may provide an explicit non-empty list of `{name,path}` objects. Missing or in-progress required gates defer safely; a completed non-success required gate fails closed. Only the final completed required gate event may dispatch, preventing CI/Security/CodeQL completion fan-out from creating duplicate cleanup requests.
-
-Immediately before dispatch the authorizer rereads the default branch. It then calls permanent `Branch Cleanup` with the exact reviewed branch list, `dry_run=false`, and exact certified SHA. The authorizer has `actions: write` but remains `contents: read`; it cannot delete refs.
-
-The downstream Branch Cleanup workflow remains the only mutation boundary. It independently requires `workflow_dispatch`, performs complete preflight, rejects default/protected/open-PR branches, revalidates every target SHA immediately before deletion, rechecks default SHA throughout mutation, and verifies every deleted ref is absent.
-
-## Metadata repair
-
-Release metadata repair is separate from publication. It may reconcile canonical GitHub Release name/body from current repository metadata only after proving historical tag and payload identity remain unchanged.
-
-It cannot move/create tags, rebuild or replace assets, change checksums, or change publication flags.
+Branch Cleanup is `workflow_dispatch` only. It rejects the default branch, protected branches, open-PR heads, malformed/duplicate targets and target movement. It binds deletion to the reviewed default SHA, revalidates immediately before mutation, serializes deletion and verifies each ref is absent afterward.
 
 ## Backward compatibility
 
-`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain available for older immutable consumers. The compatibility release pipeline delegates proof authorization and publication to the same resumable central publisher instead of maintaining a second proof-gate implementation. Its proof-payload reuse flag defaults off so historical proof adapters remain valid until deliberately migrated.
+Consumers stay pinned to immutable workflow SHAs. v0.1.5 consumers keep the v0.1.5 hosted-observer topology until they deliberately migrate. v0.1.6 consumers should install the complete generated caller family from one immutable v0.1.6 source.
 
-Consumers adopting v0.1.4 should pin the complete generated workflow family to the exact v0.1.4 commit and include `release-proof-dispatch.yml`. Earlier immutable pins keep their historical manual-proof behavior.
-
-Quality is a release-presentation reference, not a runner-controller dependency.
-
-## GITHUB_TOKEN-safe proof-to-promotion bridge
-
-v0.1.4 does not rely exclusively on `workflow_run` after an automatically dispatched `Trusted Release Proof`. GitHub suppresses some workflow-created follow-on events when the repository `GITHUB_TOKEN` initiated the child workflow, so a successful proof may complete without materializing a downstream `workflow_run` promotion event.
-
-`Release Proof Dispatch` therefore has two central phases. The first remains short and non-blocking: it validates exact-main CI/Security evidence and dispatches the dispatch-only `Trusted Release Proof`. The second delegates to `reusable-release-proof-promotion-dispatch.yml`, which runs only on `ubuntu-latest`, waits within a bounded timeout for the exact-source proof run, continuously rechecks current-main identity, fails closed on proof failure, and explicitly dispatches `Release Promotion` with the exact source SHA and proof run ID.
-
-`Release Promotion` retains its `workflow_run` entry for externally/manual dispatched proofs and also accepts the bridge's explicit `workflow_dispatch` handoff. The central publisher still independently requires a completed successful exact-source Trusted Release Proof before publication, so the bridge adds delivery reliability without weakening release authorization.
-
-The bounded wait is intentionally hosted and must never be moved onto the single trusted product runner. The trusted runner remains free for proof and publication work.
+`reusable-runner-policy.yml` and `reusable-release-pipeline.yml` remain compatibility entry points for historical consumers; new integrations should use direct runner selection and the current proof/promotion/publication/verification contracts.
