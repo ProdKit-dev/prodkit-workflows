@@ -2,6 +2,16 @@
 
 All notable changes to this repository are documented here.
 
+## [0.1.6] - 2026-08-25
+
+- Remove the hard dependency on GitHub-hosted control-plane capacity from the normal consumer release lifecycle by running short dispatch, promotion, verification-dispatch, and cleanup control jobs on the configured trusted runner.
+- Serialize the default proof-to-promotion path inside `Trusted Release Proof`: promotion is a separate job that starts only after exact-source proof succeeds and releases the runner, preserving single-runner non-blocking behavior without polling.
+- Keep the bounded GitHub-hosted proof observer as explicit compatibility mode behind `PRODKIT_GITHUB_HOSTED_CONTROL_PLANE=true`.
+- Make `Release Promotion`'s `workflow_run` listener hosted-mode-only while preserving `workflow_dispatch` as an idempotent recovery boundary.
+- Update generated callers, control-plane self-callers, contract tests, and organization audit for the private-runner-safe topology.
+- Let organization audit accept strengthened permanent release-gate sets such as `CI` + `Security` + `CodeQL` instead of hard-coding exactly two gates.
+- Correct Release Verification audit policy to allow `actions: write` solely for dispatching canonical cleanup while still forbidding direct `contents: write` ref mutation.
+
 ## [0.1.5] - 2026-08-25
 
 - Complete the normal release lifecycle so exact-main gate completion automatically reaches Trusted Release Proof, promotion, publication, independent verification, and merged release-branch cleanup without operator orchestration.
@@ -16,7 +26,6 @@ All notable changes to this repository are documented here.
 ## [0.1.4] - 2026-08-23
 
 - Bridge automatically dispatched proof to Release Promotion with an exact-source, bounded GitHub-hosted observer so v0.1.4 does not depend on a suppressed `workflow_run` edge.
-
 - Add automatic release-intent detection after exact-main `CI`/`Security` completion without converting `Trusted Release Proof` away from its dispatch-only trust boundary.
 - Add `reusable-release-proof-dispatch.yml` and generated `Release Proof Dispatch` callers. They run from successful default-branch gate completions, require the trigger SHA to still be current `main`, derive one canonical SemVer from the release manifest, and proceed only while that version is unpublished.
 - Defer cleanly while another required exact-SHA gate is still queued/in progress, fail closed when a required gate has completed unsuccessfully, ignore stale-main completions, and avoid duplicate active/successful proof dispatches.
