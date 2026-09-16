@@ -360,7 +360,7 @@ jobs:
 
       - name: Download proof-produced release payload
         if: inputs.reuse_proof_payload
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: trusted-release-proof-${{ inputs.target_sha }}
           path: ${{ runner.temp }}/trusted-release-proof
@@ -514,7 +514,7 @@ jobs:
       artifact-metadata: write
     steps:
       - name: Download sealed release payload
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-${{ inputs.version }}-${{ inputs.target_sha }}
           path: ${{ needs.prepare.outputs.artifact_dir }}
@@ -562,7 +562,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
       - name: Download sealed release payload
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-${{ inputs.version }}-${{ inputs.target_sha }}
           path: ${{ needs.prepare.outputs.artifact_dir }}
