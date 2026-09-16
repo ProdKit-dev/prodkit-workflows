@@ -12,7 +12,7 @@ on:
         type: string
         default: '["python","javascript-typescript","actions"]'
       check_script:
-        description: Optional repository-owned SARIF policy adapter under .prodkit/workflows.
+        description: Optional language-scoped SARIF policy adapter under .prodkit/workflows. It must inspect only PRODKIT_CODEQL_OUTPUT_DIR for the current PRODKIT_CODEQL_LANGUAGE and must not run repository-global hygiene or unrelated gates.
         required: false
         type: string
         default: ""
@@ -65,11 +65,12 @@ jobs:
           [[ "$resolved" == "$root/"* ]] || { echo "CodeQL check path escapes .prodkit/workflows" >&2; exit 2; }
           test -f "$CHECK_SCRIPT" && test ! -L "$CHECK_SCRIPT"
 
-      - name: Enforce repository CodeQL policy
+      - name: Enforce language CodeQL policy
         if: inputs.check_script != ''
         shell: bash
         env:
           CHECK_SCRIPT: ${{ inputs.check_script }}
+          PRODKIT_CODEQL_SCOPE: language-sarif-v1
           PRODKIT_CODEQL_LANGUAGE: ${{ matrix.language }}
           PRODKIT_CODEQL_OUTPUT_DIR: .artifacts/codeql/${{ matrix.language }}
         run: bash "$CHECK_SCRIPT"
@@ -93,4 +94,22 @@ jobs:
       - name: Verify CodeQL matrix
         env:
           RESULT: ${{ needs.analyze.result }}
-        run: test "$RESULT" = "success"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RESULT" != "success" ]]; then
+            echo "::error title=CodeQL Required::One or more language-scoped CodeQL analyses or SARIF policy checks failed. Open the failed language job; repository-global hygiene belongs in CI, not CodeQL."
+            {
+              echo "### CodeQL Required"
+              echo
+              echo "❌ One or more language-scoped CodeQL jobs failed."
+              echo
+              echo "Inspect only the failed language job(s); global repository hygiene is intentionally outside this matrix."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo "### CodeQL Required"
+            echo
+            echo "✅ All language-scoped CodeQL analyses and SARIF policy checks passed."
+          } >> "$GITHUB_STEP_SUMMARY"

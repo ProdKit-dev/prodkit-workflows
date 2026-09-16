@@ -5,6 +5,7 @@ check: contracts
 
 contracts:
 	python3 scripts/test_contracts_current.py
+	python3 scripts/test_noise_contracts.py
 
 actionlint:
 	docker run --rm -v "$$PWD:/repo:ro" --workdir /repo rhysd/actionlint:1.7.12 -color
