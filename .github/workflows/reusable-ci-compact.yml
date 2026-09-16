@@ -36,6 +36,15 @@ on:
         required: false
         type: string
         default: '["20","22","24"]'
+      node_preflight_enabled:
+        description: Run one repository-level Node prerequisite check before version lanes.
+        required: false
+        type: boolean
+        default: false
+      node_preflight_script:
+        required: false
+        type: string
+        default: .prodkit/workflows/ci-node-preflight.sh
       node_script:
         required: false
         type: string
@@ -188,9 +197,25 @@ jobs:
           test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
           bash "$CONTRACT_SCRIPT"
 
+      - name: Node preflight
+        id: node_preflight
+        if: inputs.node_enabled && inputs.node_preflight_enabled
+        continue-on-error: true
+        env:
+          CONTRACT_SCRIPT: ${{ inputs.node_preflight_script }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$CONTRACT_SCRIPT" in .prodkit/workflows/*.sh) ;; *) echo "invalid contract path: $CONTRACT_SCRIPT" >&2; exit 1 ;; esac
+          root="$(realpath .prodkit/workflows)"
+          resolved="$(realpath "$CONTRACT_SCRIPT")"
+          [[ "$resolved" == "$root/"* ]] || { echo "contract path escapes .prodkit/workflows: $CONTRACT_SCRIPT" >&2; exit 1; }
+          test -f "$CONTRACT_SCRIPT" && test ! -L "$CONTRACT_SCRIPT"
+          bash "$CONTRACT_SCRIPT"
+
       - name: Set up Node 20
         id: setup_node_20
-        if: inputs.node_enabled && contains(fromJSON(inputs.node_versions_json), '20')
+        if: inputs.node_enabled && (!inputs.node_preflight_enabled || steps.node_preflight.outcome == 'success') && contains(fromJSON(inputs.node_versions_json), '20')
         continue-on-error: true
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -198,7 +223,7 @@ jobs:
 
       - name: Node 20
         id: node_20
-        if: inputs.node_enabled && steps.setup_node_20.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '20')
+        if: inputs.node_enabled && (!inputs.node_preflight_enabled || steps.node_preflight.outcome == 'success') && steps.setup_node_20.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '20')
         continue-on-error: true
         env:
           CONTRACT_SCRIPT: ${{ inputs.node_script }}
@@ -215,7 +240,7 @@ jobs:
 
       - name: Set up Node 22
         id: setup_node_22
-        if: inputs.node_enabled && contains(fromJSON(inputs.node_versions_json), '22')
+        if: inputs.node_enabled && (!inputs.node_preflight_enabled || steps.node_preflight.outcome == 'success') && contains(fromJSON(inputs.node_versions_json), '22')
         continue-on-error: true
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -223,7 +248,7 @@ jobs:
 
       - name: Node 22
         id: node_22
-        if: inputs.node_enabled && steps.setup_node_22.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '22')
+        if: inputs.node_enabled && (!inputs.node_preflight_enabled || steps.node_preflight.outcome == 'success') && steps.setup_node_22.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '22')
         continue-on-error: true
         env:
           CONTRACT_SCRIPT: ${{ inputs.node_script }}
@@ -240,7 +265,7 @@ jobs:
 
       - name: Set up Node 24
         id: setup_node_24
-        if: inputs.node_enabled && contains(fromJSON(inputs.node_versions_json), '24')
+        if: inputs.node_enabled && (!inputs.node_preflight_enabled || steps.node_preflight.outcome == 'success') && contains(fromJSON(inputs.node_versions_json), '24')
         continue-on-error: true
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -248,7 +273,7 @@ jobs:
 
       - name: Node 24
         id: node_24
-        if: inputs.node_enabled && steps.setup_node_24.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '24')
+        if: inputs.node_enabled && (!inputs.node_preflight_enabled || steps.node_preflight.outcome == 'success') && steps.setup_node_24.outcome == 'success' && contains(fromJSON(inputs.node_versions_json), '24')
         continue-on-error: true
         env:
           CONTRACT_SCRIPT: ${{ inputs.node_script }}
@@ -356,6 +381,7 @@ jobs:
           PYTHON_312: ${{ steps.python_312.outcome }}
           PYTHON_313: ${{ steps.python_313.outcome }}
           PYTHON_314: ${{ steps.python_314.outcome }}
+          NODE_PREFLIGHT: ${{ steps.node_preflight.outcome }}
           SETUP_NODE_20: ${{ steps.setup_node_20.outcome }}
           NODE_20: ${{ steps.node_20.outcome }}
           SETUP_NODE_22: ${{ steps.setup_node_22.outcome }}
@@ -372,7 +398,7 @@ jobs:
           python3 - <<'PY'
           import os
           names=(
-              'HYGIENE','SETUP_UV','PYTHON_312','PYTHON_313','PYTHON_314',
+              'HYGIENE','SETUP_UV','PYTHON_312','PYTHON_313','PYTHON_314','NODE_PREFLIGHT',
               'SETUP_NODE_20','NODE_20','SETUP_NODE_22','NODE_22','SETUP_NODE_24','NODE_24',
               'POSTGRES_START','POSTGRES','CONTAINER','CUSTOM',
           )
