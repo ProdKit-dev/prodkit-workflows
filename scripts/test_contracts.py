@@ -66,6 +66,35 @@ def require(text: str, fragments: tuple[str, ...], *, name: str) -> None:
             raise SystemExit(f"{name} missing contract fragment: {fragment}")
 
 
+# Reusable action pins must agree with the audited 40-hex SHA across every job.
+MANAGED_ACTION_PINS = {
+    "github/codeql-action/init": ("24c54180a607b1449ed407dd24f251e4e9147c8d", "4.38.3"),
+    "github/codeql-action/analyze": ("24c54180a607b1449ed407dd24f251e4e9147c8d", "4.38.3"),
+    "astral-sh/setup-uv": ("07a047e608db84b3d8c06cd9a7c7dcc9c355c18e", "10.3.2"),
+    "actions/download-artifact": ("9000827ccba6bdab643e8b6fd33ac0654aef8333", "8.0.2"),
+    "actions/upload-artifact": ("cf430e030ddbb5b0abf93d22962f4752f3646cd9", "7.0.2"),
+}
+
+
+def test_managed_action_pins() -> None:
+    seen: set[str] = set()
+    for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            for action, (sha, version) in MANAGED_ACTION_PINS.items():
+                prefix = f"uses: {action}@"
+                if stripped.startswith(prefix):
+                    expected = f"{prefix}{sha} # v{version}"
+                    if stripped != expected:
+                        raise SystemExit(
+                            f"{path.relative_to(ROOT)} has unexpected {action} pin: {stripped}"
+                        )
+                    seen.add(action)
+    missing = MANAGED_ACTION_PINS.keys() - seen
+    if missing:
+        raise SystemExit(f"managed workflow actions missing: {sorted(missing)}")
+
+
 def run_validator(root: pathlib.Path, *, expect_success: bool) -> None:
     result = subprocess.run(
         ["python3", str(VALIDATOR), "1.2.3", "--root", str(root)],
@@ -220,6 +249,7 @@ def test_bootstrap() -> None:
 
 
 def main() -> None:
+    test_managed_action_pins()
     subprocess.run(
         [
             "python3",
@@ -319,7 +349,7 @@ def main() -> None:
             "proof path escapes .prodkit/workflows",
             "Assert source remained immutable",
             "trusted-release-proof-${{ inputs.source_sha }}",
-            "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
+            "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e",
             "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
             "corepack prepare",
         ),
@@ -365,7 +395,8 @@ def main() -> None:
         codeql,
         (
             "CodeQL (${{ matrix.language }})",
-            "github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd",
+            "github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d",
+            "github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d",
             "CodeQL Required",
             "check_script:",
         ),
